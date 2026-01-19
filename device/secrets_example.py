@@ -1,0 +1,3 @@
+SSID = "TELUS####"
+PASSWORD = "..."
+API_BASE_URL = "http://192.168.1.84:3000"

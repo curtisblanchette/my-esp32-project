@@ -17,23 +17,46 @@ python -m http.server 3000
 ```
 
 ## Testing Code on the ESP32
-- connect ESP32 over USB
-- ./tools/flash.sh 
-- ./tools/repl.sh
-- ./tools/reset.sh
+1. First, connect ESP32 over USB.
+2. Flash the device with the MicoPython binary.
+3. Fill environment variables in `secrets.py`.
+4. Upload the device files with `./tools/flash.sh`.
+4. Monitor the serial console with `./tools/repl.sh`.
+5. Reset the device with `./tools/reset.sh`.
 
-## Lib
+### Flash (Upload Device Files)
+```bash
+./tools/flash.sh
+``` 
+### Monitor
+```bash
+./tools/repl.sh
+```
+### Reset
+```bash
+./tools/reset.sh
+```
 
-### wifi
-The wifi module will scan and connect to a wifi network
+# Device Files
 
-### led
-The led module will blink an LED on the ESP32 on pin 5
+## lib/sensors
 
-## Services
+### TempSensor Module
+The temp module reads the temperature and humidity from a DHT sensor
 
-### web
-The web module will make a GET request to a specified URL
+### Wifi Module
+The wifi module scans and connects to a specified network using SSID and PASSWORD
+
+### Led Module
+The led module blinks an LED on a specified pin
+
+## /services
+
+### /services/web
+The web module makes HTTP requests to a specified URL
+
+### /service/mqtt
+The mqtt module subscribes to a specified topic and calls a callback function when a message is received
 
 
 

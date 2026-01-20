@@ -1,0 +1,1 @@
+mpremote connect /dev/tty.usbserial-2110 fs cp -r device/* :

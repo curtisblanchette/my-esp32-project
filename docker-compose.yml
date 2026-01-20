@@ -1,0 +1,35 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: my-esp32-mosquitto
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: my-esp32-app
+    depends_on:
+      - mosquitto
+    command: npm run dev
+    volumes:
+      - ./app/src:/app/src
+      - ./app/tsconfig.json:/app/tsconfig.json
+      - ./app/package.json:/app/package.json
+      - ./app/package-lock.json:/app/package-lock.json
+      - /app/node_modules
+    environment:
+      PORT: "3000"
+      MQTT_URL: mqtt://mosquitto:1883
+      MQTT_TOPIC_PREFIX: /device
+    ports:
+      - "3000:3000"
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:

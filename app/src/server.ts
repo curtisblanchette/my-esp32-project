@@ -88,28 +88,6 @@ mqttClient.on("error", (err) => {
   console.error("MQTT error", err);
 });
 
-app.get("/sensor", (req: Request, res: Response) => {
-  const temp = parseNumber(req.query.temp);
-  const humidity = parseNumber(req.query.humidity);
-
-  if (temp === null || humidity === null) {
-    res.status(400).json({
-      ok: false,
-      error: "Missing or invalid query params. Expected /sensor?temp={temp}&humidity={humidity}",
-    });
-    return;
-  }
-
-  latest = {
-    temp,
-    humidity,
-    updatedAt: Date.now(),
-    sourceIp: req.ip,
-  };
-
-  res.json({ ok: true, latest });
-});
-
 app.get("/api/latest", (_req: Request, res: Response) => {
   res.json({ ok: true, latest });
 });

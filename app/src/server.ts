@@ -1,5 +1,3 @@
-import "dotenv/config";
-
 import { config } from "./config/index.js";
 import { createApp } from "./app.js";
 import { initMqttTelemetry } from "./services/mqttTelemetry.js";

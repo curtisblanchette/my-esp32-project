@@ -2,6 +2,7 @@ import mqtt from "mqtt";
 
 import { config } from "../config/index.js";
 import { parseTelemetry } from "../lib/telemetry.js";
+import { insertReading } from "../lib/sqlite.js";
 import { setLatest } from "../state/latestReading.js";
 
 export function initMqttTelemetry(): void {
@@ -36,7 +37,15 @@ export function initMqttTelemetry(): void {
         updatedAt: Date.now(),
         sourceTopic: topic,
       });
-    } catch {
+
+      insertReading({
+        ts: Date.now(),
+        temp: reading.temp,
+        humidity: reading.humidity,
+        sourceTopic: topic,
+      });
+    } catch(e) {
+      console.error("Error", e);
       return;
     }
   });

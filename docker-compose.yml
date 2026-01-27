@@ -9,6 +9,15 @@ services:
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
 
+  redis:
+    image: redis:7-alpine
+    container_name: my-esp32-redis
+    ports:
+      - "6381:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
   api:
     build:
       context: .
@@ -16,6 +25,7 @@ services:
     container_name: my-esp32-api
     depends_on:
       - mosquitto
+      - redis
     volumes:
       - ./apps/api:/workspace/apps/api
       - api_node_modules:/workspace/apps/api/node_modules
@@ -27,6 +37,7 @@ services:
       PORT: "3000"
       MQTT_URL: mqtt://mosquitto:1883
       MQTT_TOPIC_PREFIX: /device
+      REDIS_URL: redis://redis:6379
       SQLITE_PATH: /workspace/apps/api/data/telemetry.sqlite
       SQLITE_JOURNAL_MODE: DELETE
     ports:
@@ -53,5 +64,6 @@ services:
 volumes:
   mosquitto_data:
   mosquitto_log:
+  redis_data:
   api_node_modules:
   web_node_modules:

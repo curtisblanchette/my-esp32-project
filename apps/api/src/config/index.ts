@@ -12,6 +12,8 @@ const MQTT_USERNAME = process.env.MQTT_USERNAME;
 const MQTT_PASSWORD = process.env.MQTT_PASSWORD;
 const MQTT_TOPIC_PREFIX = process.env.MQTT_TOPIC_PREFIX ?? "/device";
 
+const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
+
 const mqttUrl = MQTT_URL ?? `mqtt://${MQTT_HOST}:${MQTT_PORT}`;
 
 export const config = {
@@ -25,4 +27,5 @@ export const config = {
     reconnectPeriod: 1000,
   },
   topicPrefix: MQTT_TOPIC_PREFIX,
+  redisUrl: REDIS_URL,
 } as const;

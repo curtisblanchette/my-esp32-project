@@ -2,10 +2,13 @@ import { config } from "./config/index.js";
 import { createApp } from "./app.js";
 import { getDb } from "./lib/sqlite.js";
 import { initMqttTelemetry } from "./services/mqttTelemetry.js";
+import { startAggregationJob } from "./services/aggregationJob.js";
 
 getDb();
 
 initMqttTelemetry();
+
+startAggregationJob();
 
 const app = createApp();
 

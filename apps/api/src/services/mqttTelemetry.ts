@@ -2,7 +2,7 @@ import mqtt from "mqtt";
 
 import { config } from "../config/index.js";
 import { parseTelemetry } from "../lib/telemetry.js";
-import { insertReading } from "../lib/sqlite.js";
+import { storeReading } from "../lib/redis.js";
 import { setLatest } from "../state/latestReading.js";
 
 export function initMqttTelemetry(): void {
@@ -31,18 +31,22 @@ export function initMqttTelemetry(): void {
       const reading = parseTelemetry(json);
       if (!reading) return;
 
+      const ts = Date.now();
+
       setLatest({
         temp: reading.temp,
         humidity: reading.humidity,
-        updatedAt: Date.now(),
+        updatedAt: ts,
         sourceTopic: topic,
       });
 
-      insertReading({
-        ts: Date.now(),
+      storeReading({
+        ts,
         temp: reading.temp,
         humidity: reading.humidity,
         sourceTopic: topic,
+      }).catch((err) => {
+        console.error("Failed to store reading in Redis", err);
       });
     } catch(e) {
       console.error("Error", e);

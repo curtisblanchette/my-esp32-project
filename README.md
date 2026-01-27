@@ -1,62 +1,117 @@
-# ESP32 Test Project
+# My ESP32 Project
+A monorepo for testing ESP32 devices. These embedded IoT devices collect telemetry data from a collection of differing sensors and devices. HOT data is stored in a Redis database and aggregated data is stored in a SQLite database.
+The dashboard is a React SPA that displays the both real-time sensor data and aggregated data for linear chart views.
+
+## Preview
+
+![img.png](img.png)
 
 ## Requirements
-### **ESP32**
-
-### **MicroPython Binary**
-Binary to flash to ESP32 
+Devices: **ESP32** flashed with MicroPython
+- **MicroPython Binary**
+- Binary to flash to ESP32 
 ```./bin/ESP32_GENERIC_20251209-v1.27.0.bin```
 
-### **mpremote**
-Used to upload code to ESP32 and monitor the Serial Console
+### **$ mpremote**
+Micropython Remote utility to upload code to ESP32 and interact with a connected device.
 
-### **Simple Web Server**
-Serve a web service for testing api calls from the esp32
-```python 
-python -m http.server 3000
-```
-
-## Testing Code on the ESP32
+### Testing Code on the ESP32
 1. First, connect ESP32 over USB.
 2. Flash the device with the MicoPython binary.
-3. Fill environment variables in `secrets.py`.
+3. Fill environment variables in `./device/secrets.py`.
 4. Upload the device files with `./tools/flash.sh`.
 4. Monitor the serial console with `./tools/repl.sh`.
 5. Reset the device with `./tools/reset.sh`.
 
-### Flash (Upload Device Files)
+### Upload Device Files
 ```bash
 ./tools/flash.sh
 ``` 
-### Monitor
+### Monitor Serial Console
 ```bash
 ./tools/repl.sh
 ```
-### Reset
+### Reset Device
 ```bash
 ./tools/reset.sh
 ```
 
-# Device Files
+## Infrastructure
 
-## lib/sensors
+### --  Docker Compose Orchestration --
 
-### TempSensor Module
-The temp module reads the temperature and humidity from a DHT sensor
+### MQTT Message Broker
+Handles ingestion of telemetry events
 
-### Wifi Module
-The wifi module scans and connects to a specified network using SSID and PASSWORD
+### Redis
+HOT storage of realtime telemetry data. Used to drive 48hr views.
 
-### Led Module
-The led module blinks an LED on a specified pin
+### SQLite
+COLD storage of aggregated telemetry data. Used to drive 30d views.
 
-## /services
+### Node App: API
+REST API for ingesting telemetry events and querying telemetry data.
 
-### /services/web
-The web module makes HTTP requests to a specified URL
+### Node App: Web
+React SPA for visualizing telemetry data.
 
-### /service/mqtt
-The mqtt module subscribes to a specified topic and calls a callback function when a message is received
 
+
+## Project Structure
+This project uses a monorepo structure with a number of subprojects coordinating the different components of the system.
+
+```
+├── README.md
+├── apps
+│   ├── api
+│   │   ├── Dockerfile
+│   │   ├── data
+│   │   ├── dist
+│   │   ├── node_modules
+│   │   ├── package.json
+│   │   ├── src
+│   │   └── tsconfig.json
+│   └── web
+│       ├── Dockerfile
+│       ├── index.html
+│       ├── node_modules
+│       ├── package.json
+│       ├── public
+│       ├── src
+│       ├── tsconfig.json
+│       └── vite.config.ts
+├── bin
+│   └── ESP32_GENERIC-20251209-v1.27.0.bin
+├── data
+│   └── telemetry.sqlite
+├── device
+│   ├── boot.py
+│   ├── config.py
+│   ├── lib
+│   │   ├── __init__.py
+│   │   ├── led.py
+│   │   ├── sensors
+│   │   └── wifi.py
+│   ├── main.py
+│   ├── secrets.py
+│   ├── secrets_example.py
+│   └── services
+│       ├── __init__.py
+│       ├── mqtt.py
+│       └── web.py
+├── docker-compose.yml
+├── img.png
+├── mosquitto
+│   └── mosquitto.conf
+├── package-lock.json
+├── package.json
+├── requirements.txt
+├── tools
+│   ├── flash.sh
+│   ├── repl.sh
+│   ├── reset.sh
+│   └── upload.py
+└── turbo.json
+```
 
 

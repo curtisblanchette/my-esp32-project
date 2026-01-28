@@ -1,1 +1,3 @@
+.env
 device/secrets.py
+data/telemetry.sqlite

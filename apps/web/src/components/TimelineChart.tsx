@@ -22,7 +22,7 @@ function fmtTimeShort(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function TimelineChart(props: { points: HistoryPoint[] }): React.ReactElement {
+export function TimelineChart(props: { points: HistoryPoint[]; timeRange: { sinceMs: number; untilMs: number } }): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<Chart | null>(null);
 
@@ -31,6 +31,15 @@ export function TimelineChart(props: { points: HistoryPoint[] }): React.ReactEle
     const humidity = props.points.map((p) => ({ x: Number(p.ts), y: Number(p.humidity) }));
     return { temp, humidity };
   }, [props.points]);
+
+  const axisRange = useMemo(() => {
+    const duration = props.timeRange.untilMs - props.timeRange.sinceMs;
+    const padding = Math.max(60_000, duration * 0.01);
+    return {
+      min: props.timeRange.sinceMs - padding,
+      max: props.timeRange.untilMs + padding,
+    };
+  }, [props.timeRange]);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -89,6 +98,8 @@ export function TimelineChart(props: { points: HistoryPoint[] }): React.ReactEle
           scales: {
             x: {
               type: "linear",
+              min: axisRange.min,
+              max: axisRange.max,
               grid: { color: "rgba(127, 127, 127, 0.18)" },
               ticks: {
                 maxTicksLimit: 7,
@@ -119,8 +130,14 @@ export function TimelineChart(props: { points: HistoryPoint[] }): React.ReactEle
     const chart = chartRef.current;
     chart.data.datasets[0]!.data = series.temp as unknown as never[];
     chart.data.datasets[1]!.data = series.humidity as unknown as never[];
+    
+    if (chart.options.scales?.x) {
+      chart.options.scales.x.min = axisRange.min;
+      chart.options.scales.x.max = axisRange.max;
+    }
+    
     chart.update("none");
-  }, [series]);
+  }, [series, axisRange]);
 
   useEffect(() => {
     return () => {
@@ -129,5 +146,5 @@ export function TimelineChart(props: { points: HistoryPoint[] }): React.ReactEle
     };
   }, []);
 
-  return <canvas ref={canvasRef} />;
+  return <canvas ref={canvasRef} className="block w-full h-full" />;
 }

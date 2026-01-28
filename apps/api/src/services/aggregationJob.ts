@@ -66,8 +66,8 @@ async function aggregateAndFlush(): Promise<void> {
 
   let insertedCount = 0;
   for (const bucket of buckets.values()) {
-    const avgTemp = bucket.tempSum / bucket.count;
-    const avgHumidity = bucket.humiditySum / bucket.count;
+    const avgTemp = Math.round((bucket.tempSum / bucket.count) * 100) / 100;
+    const avgHumidity = Math.round((bucket.humiditySum / bucket.count) * 100) / 100;
 
     stmt.run(bucket.ts, avgTemp, avgHumidity, bucket.sourceTopic);
     insertedCount++;

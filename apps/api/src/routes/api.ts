@@ -32,12 +32,6 @@ export function createApiRouter(): Router {
 
     try {
       const redisReadings = await getReadingsInRange(sinceMs, untilMs);
-      const sqliteReadings = queryHistoryRaw({ sinceMs, untilMs, limit });
-
-      const allReadings = [...sqliteReadings, ...redisReadings];
-      allReadings.sort((a, b) => a.ts - b.ts);
-
-      const limitedReadings = allReadings.slice(0, limit);
 
       if (bucketMs !== null) {
         if (!Number.isFinite(bucketMs) || bucketMs <= 0) {
@@ -45,8 +39,19 @@ export function createApiRouter(): Router {
           return;
         }
 
+        const bucketedSqlite = queryHistoryBucketed({ sinceMs, untilMs, limit, bucketMs });
+
         const buckets = new Map<number, { tempSum: number; humiditySum: number; count: number }>();
-        for (const reading of limitedReadings) {
+
+        for (const row of bucketedSqlite) {
+          buckets.set(row.ts, {
+            tempSum: row.temp * row.count,
+            humiditySum: row.humidity * row.count,
+            count: row.count,
+          });
+        }
+
+        for (const reading of redisReadings) {
           const bucketTs = Math.floor(reading.ts / bucketMs) * bucketMs;
           const existing = buckets.get(bucketTs);
           if (existing) {
@@ -70,9 +75,16 @@ export function createApiRouter(): Router {
         }));
         points.sort((a, b) => a.ts - b.ts);
 
-        res.json({ ok: true, mode: "bucketed", points, sources: { redis: redisReadings.length, sqlite: sqliteReadings.length } });
+        const limitedPoints = points.slice(-limit);
+
+        res.json({ ok: true, mode: "bucketed", points: limitedPoints, sources: { redis: redisReadings.length, sqlite: bucketedSqlite.length } });
         return;
       }
+
+      const sqliteReadings = queryHistoryRaw({ sinceMs, untilMs, limit });
+      const allReadings = [...sqliteReadings, ...redisReadings];
+      allReadings.sort((a, b) => a.ts - b.ts);
+      const limitedReadings = allReadings.slice(-limit);
 
       res.json({ ok: true, mode: "raw", points: limitedReadings, sources: { redis: redisReadings.length, sqlite: sqliteReadings.length } });
     } catch (err) {

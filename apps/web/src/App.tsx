@@ -172,7 +172,13 @@ export function App(): React.ReactElement {
   return (
     <div
       className="w-full max-w-[1040px] border border-panel-border rounded-2xl p-5 bg-black/[0.03] backdrop-blur-[10px]">
-      <h1 className="m-0 mb-3 text-xl">Sensor Dashboard</h1>
+      <div className="w-full flex justify-between">
+        <h1 className="m-0 mb-3 text-xl">Sensor Dashboard</h1>
+        <div className="flex items-center gap-2">
+          <img src="/microcontroller.png" alt="" className="w-[36px] h-[36px]"/>
+          esp32-1
+        </div>
+      </div>
 
       <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-3 mt-3">
         <div className="rounded-2xl border border-panel-border bg-panel p-4 min-w-0 [container-type:inline-size]">

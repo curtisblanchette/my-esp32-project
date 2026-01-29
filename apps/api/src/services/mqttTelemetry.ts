@@ -4,6 +4,7 @@ import { config } from "../config/index.js";
 import { parseTelemetry } from "../lib/telemetry.js";
 import { storeReading } from "../lib/redis.js";
 import { setLatest } from "../state/latestReading.js";
+import { broadcastLatestReading } from "./websocket.js";
 
 export function initMqttTelemetry(): void {
   const mqttClient = mqtt.connect(config.mqttUrl, {
@@ -33,12 +34,17 @@ export function initMqttTelemetry(): void {
 
       const ts = Date.now();
 
-      setLatest({
+      const latestReading = {
         temp: reading.temp,
         humidity: reading.humidity,
         updatedAt: ts,
         sourceTopic: topic,
-      });
+      };
+
+      setLatest(latestReading);
+
+      // Broadcast to WebSocket clients
+      broadcastLatestReading(latestReading);
 
       storeReading({
         ts,

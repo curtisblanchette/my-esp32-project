@@ -2,7 +2,7 @@ import "dotenv/config";
 
 const PORT = Number(process.env.PORT ?? 3000);
 
-const SQLITE_PATH = process.env.SQLITE_PATH ?? "./data/telemetry.sqlite";
+const SQLITE_PATH = process.env.SQLITE_PATH ?? "../../data/telemetry.sqlite";
 const SQLITE_JOURNAL_MODE = process.env.SQLITE_JOURNAL_MODE ?? "WAL";
 
 const MQTT_URL = process.env.MQTT_URL;

@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from "express";
 
-import { queryHistoryBucketed, queryHistoryRaw } from "../lib/sqlite.js";
+import { queryHistoryBucketed, queryHistoryRaw, getAllRelayConfigs, getRelayConfig, createRelayConfig, updateRelayConfig, deleteRelayConfig } from "../lib/sqlite.js";
 import { getReadingsInRange } from "../lib/redis.js";
 import { getLatest } from "../state/latestReading.js";
 
@@ -90,6 +90,94 @@ export function createApiRouter(): Router {
     } catch (err) {
       console.error("Error querying history", err);
       res.status(500).json({ ok: false, error: "Failed to query history" });
+    }
+  });
+
+  router.get("/relays", (_req: Request, res: Response) => {
+    try {
+      const configs = getAllRelayConfigs();
+      const relays = configs.map((config) => ({
+        id: config.id,
+        name: config.name,
+        state: Boolean(config.enabled),
+        updatedAt: config.updatedAt,
+      }));
+      res.json({ ok: true, relays });
+    } catch (err) {
+      console.error("Error fetching relays", err);
+      res.status(500).json({ ok: false, error: "Failed to fetch relays" });
+    }
+  });
+
+  router.get("/relays/:id", (req: Request, res: Response) => {
+    try {
+      const relay = getRelayConfig(req.params.id);
+      if (!relay) {
+        res.status(404).json({ ok: false, error: "Relay not found" });
+        return;
+      }
+      res.json({ ok: true, relay });
+    } catch (err) {
+      console.error("Error fetching relay", err);
+      res.status(500).json({ ok: false, error: "Failed to fetch relay" });
+    }
+  });
+
+  router.post("/relays", (req: Request, res: Response) => {
+    try {
+      const { id, name, pin, enabled } = req.body;
+      if (!id || !name) {
+        res.status(400).json({ ok: false, error: "id and name are required" });
+        return;
+      }
+      const relay = createRelayConfig({ id, name, pin, enabled });
+      res.json({ ok: true, relay });
+    } catch (err) {
+      console.error("Error creating relay", err);
+      res.status(500).json({ ok: false, error: "Failed to create relay" });
+    }
+  });
+
+  router.patch("/relays/:id", (req: Request, res: Response) => {
+    try {
+      const { name, pin, enabled } = req.body;
+      const relay = updateRelayConfig(req.params.id, { name, pin, enabled });
+      if (!relay) {
+        res.status(404).json({ ok: false, error: "Relay not found" });
+        return;
+      }
+      res.json({ ok: true, relay });
+    } catch (err) {
+      console.error("Error updating relay", err);
+      res.status(500).json({ ok: false, error: "Failed to update relay" });
+    }
+  });
+
+  router.post("/relays/:id", (req: Request, res: Response) => {
+    try {
+      const { state } = req.body;
+      if (typeof state !== "boolean") {
+        res.status(400).json({ ok: false, error: "state must be a boolean" });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Error setting relay state", err);
+      res.status(500).json({ ok: false, error: "Failed to set relay state" });
+    }
+  });
+
+  router.delete("/relays/:id", (req: Request, res: Response) => {
+    try {
+      const success = deleteRelayConfig(req.params.id);
+      if (!success) {
+        res.status(404).json({ ok: false, error: "Relay not found" });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      console.error("Error deleting relay", err);
+      res.status(500).json({ ok: false, error: "Failed to delete relay" });
     }
   });
 

@@ -18,6 +18,15 @@ export type TelemetryBucketRow = {
   count: number;
 };
 
+export type RelayConfig = {
+  id: string;
+  name: string;
+  pin: number | null;
+  enabled: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
 let db: DatabaseSync | null = null;
 let didLogDbPath = false;
 
@@ -46,6 +55,15 @@ export function getDb(): DatabaseSync {
     );
 
     CREATE INDEX IF NOT EXISTS idx_sensor_readings_ts ON sensor_readings(ts);
+
+    CREATE TABLE IF NOT EXISTS relay_config (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      pin INTEGER,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
 
   return db;
@@ -95,4 +113,57 @@ export function queryHistoryBucketed(args: {
   );
 
   return stmt.all(args.bucketMs, args.bucketMs, args.sinceMs, args.untilMs, args.limit) as TelemetryBucketRow[];
+}
+
+export function getAllRelayConfigs(): RelayConfig[] {
+  const d = getDb();
+  const stmt = d.prepare(
+    "SELECT id, name, pin, enabled, created_at AS createdAt, updated_at AS updatedAt FROM relay_config ORDER BY created_at ASC"
+  );
+  const rows = stmt.all() as Array<Omit<RelayConfig, 'enabled'> & { enabled: number }>;
+  return rows.map(row => ({ ...row, enabled: Boolean(row.enabled) }));
+}
+
+export function getRelayConfig(id: string): RelayConfig | null {
+  const d = getDb();
+  const stmt = d.prepare(
+    "SELECT id, name, pin, enabled, created_at AS createdAt, updated_at AS updatedAt FROM relay_config WHERE id = ?"
+  );
+  const result = stmt.get(id) as (Omit<RelayConfig, 'enabled'> & { enabled: number }) | undefined;
+  if (!result) return null;
+  return { ...result, enabled: Boolean(result.enabled) };
+}
+
+export function createRelayConfig(config: { id: string; name: string; pin?: number | null; enabled?: boolean }): RelayConfig {
+  const d = getDb();
+  const now = Date.now();
+  const stmt = d.prepare(
+    "INSERT INTO relay_config (id, name, pin, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+  );
+  stmt.run(config.id, config.name, config.pin ?? null, config.enabled ? 1 : 0, now, now);
+  return getRelayConfig(config.id)!;
+}
+
+export function updateRelayConfig(id: string, updates: { name?: string; pin?: number | null; enabled?: boolean }): RelayConfig | null {
+  const d = getDb();
+  const existing = getRelayConfig(id);
+  if (!existing) return null;
+
+  const now = Date.now();
+  const name = updates.name ?? existing.name;
+  const pin = updates.pin !== undefined ? updates.pin : existing.pin;
+  const enabled = updates.enabled !== undefined ? updates.enabled : existing.enabled;
+
+  const stmt = d.prepare(
+    "UPDATE relay_config SET name = ?, pin = ?, enabled = ?, updated_at = ? WHERE id = ?"
+  );
+  stmt.run(name, pin, enabled ? 1 : 0, now, id);
+  return getRelayConfig(id);
+}
+
+export function deleteRelayConfig(id: string): boolean {
+  const d = getDb();
+  const stmt = d.prepare("DELETE FROM relay_config WHERE id = ?");
+  const result = stmt.run(id);
+  return result.changes > 0;
 }

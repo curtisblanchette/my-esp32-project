@@ -25,10 +25,20 @@ body {
   body {
     @apply p-3.5 place-items-start items-start content-start;
     place-items: start center;
+    background: radial-gradient(1200px 900px at 20% 0%, rgba(56, 189, 248, 0.10), rgba(56, 189, 248, 0.04) 40%, transparent 65%),
+      radial-gradient(900px 700px at 90% 30%, rgba(251, 113, 133, 0.12), transparent 55%);
   }
 }
 
 @layer components {
+  .glass-card {
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.15);
+  }
+
   .circle {
     --size: clamp(160px, 42vw, 220px);
     width: var(--size);
@@ -116,5 +126,20 @@ body {
     100% {
       transform: translateX(-60%);
     }
+  }
+
+  @keyframes slide-in-down {
+    0% {
+      transform: translateY(-100%);
+      opacity: 0;
+    }
+    100% {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  .animate-slide-in-down {
+    animation: slide-in-down 0.3s ease-out;
   }
 }

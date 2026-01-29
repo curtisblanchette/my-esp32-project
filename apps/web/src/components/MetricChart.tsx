@@ -10,8 +10,6 @@ import {
   Filler,
 } from "chart.js";
 
-import type { HistoryPoint } from "../api";
-
 Chart.register(LineController, LineElement, PointElement, LinearScale, Tooltip, Legend, Filler);
 
 function fmtTime(ms: number): string {
@@ -22,15 +20,20 @@ function fmtTimeShort(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function TimelineChart(props: { points: HistoryPoint[]; timeRange: { sinceMs: number; untilMs: number } }): React.ReactElement {
+export interface MetricChartProps {
+  data: Array<{ x: number; y: number }>;
+  timeRange: { sinceMs: number; untilMs: number };
+  label: string;
+  color: string;
+  backgroundColor: string;
+  yMin: number;
+  yMax: number;
+  yTickFormat: (value: number) => string;
+}
+
+export function MetricChart(props: MetricChartProps): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<Chart | null>(null);
-
-  const series = useMemo(() => {
-    const temp = props.points.map((p) => ({ x: Number(p.ts), y: Number(p.temp) }));
-    const humidity = props.points.map((p) => ({ x: Number(p.ts), y: Number(p.humidity) }));
-    return { temp, humidity };
-  }, [props.points]);
 
   const axisRange = useMemo(() => {
     const duration = props.timeRange.untilMs - props.timeRange.sinceMs;
@@ -53,25 +56,13 @@ export function TimelineChart(props: { points: HistoryPoint[]; timeRange: { sinc
         data: {
           datasets: [
             {
-              label: "Temp (°C)",
-              data: series.temp,
-              borderColor: "rgba(251, 113, 133, 0.95)",
-              backgroundColor: "rgba(251, 113, 133, 0.20)",
+              label: props.label,
+              data: props.data,
+              borderColor: props.color,
+              backgroundColor: props.backgroundColor,
               tension: 0.25,
               pointRadius: 0,
               borderWidth: 2,
-              yAxisID: "yTemp",
-              fill: true,
-            },
-            {
-              label: "Humidity (%)",
-              data: series.humidity,
-              borderColor: "rgba(56, 189, 248, 0.95)",
-              backgroundColor: "rgba(56, 189, 248, 0.20)",
-              tension: 0.25,
-              pointRadius: 0,
-              borderWidth: 2,
-              yAxisID: "yHumidity",
               fill: true,
             },
           ],
@@ -84,7 +75,7 @@ export function TimelineChart(props: { points: HistoryPoint[]; timeRange: { sinc
           parsing: false,
           interaction: { mode: "index", intersect: false },
           plugins: {
-            legend: { display: true },
+            legend: { display: false },
             tooltip: {
               callbacks: {
                 title: (items) => {
@@ -102,25 +93,16 @@ export function TimelineChart(props: { points: HistoryPoint[]; timeRange: { sinc
               max: axisRange.max,
               grid: { color: "rgba(127, 127, 127, 0.18)" },
               ticks: {
-                maxTicksLimit: 7,
+                maxTicksLimit: 5,
                 callback: (value) => fmtTimeShort(Number(value)),
               },
             },
-            yTemp: {
+            y: {
               type: "linear",
-              position: "left",
-              min: 0,
-              max: 50,
+              min: props.yMin,
+              max: props.yMax,
               grid: { color: "rgba(127, 127, 127, 0.18)" },
-              ticks: { callback: (v) => `${v}°` },
-            },
-            yHumidity: {
-              type: "linear",
-              position: "right",
-              min: 0,
-              max: 100,
-              grid: { drawOnChartArea: false },
-              ticks: { callback: (v) => `${v}%` },
+              ticks: { callback: (value) => props.yTickFormat(Number(value)) },
             },
           },
         },
@@ -130,8 +112,7 @@ export function TimelineChart(props: { points: HistoryPoint[]; timeRange: { sinc
     }
 
     const chart = chartRef.current;
-    chart.data.datasets[0]!.data = series.temp as unknown as never[];
-    chart.data.datasets[1]!.data = series.humidity as unknown as never[];
+    chart.data.datasets[0]!.data = props.data as unknown as never[];
     
     if (chart.options.scales?.x) {
       chart.options.scales.x.min = axisRange.min;
@@ -139,7 +120,7 @@ export function TimelineChart(props: { points: HistoryPoint[]; timeRange: { sinc
     }
     
     chart.update("none");
-  }, [series, axisRange]);
+  }, [props.data, axisRange, props.label, props.color, props.backgroundColor, props.yMin, props.yMax, props.yTickFormat]);
 
   useEffect(() => {
     return () => {

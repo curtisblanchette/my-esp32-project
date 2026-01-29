@@ -1,14 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 
-import { fetchHistory, fetchLatest, type HistoryPoint, type LatestReading } from './api';
-import { TimelineChart } from './components/TimelineChart';
+import { fetchLatest, fetchRelayStatus, type LatestReading, type RelayStatus } from './api';
+import { MetricCard } from './components/MetricCard';
+import { RelayControl } from './components/RelayControl';
+import { Toast } from './components/Toast';
+import { useWebSocket } from './hooks/useWebSocket';
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
-}
-
-function fmt1(n: number): string {
-  return Number.isFinite(n) ? n.toFixed(1) : '--';
 }
 
 function tempToMix(tC: number): number {
@@ -23,128 +22,107 @@ function fmtTime(ms: number): string {
   return new Date(ms).toLocaleString();
 }
 
-function fmtTimeShort(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-}
-
-enum DateRangePreset {
-  ONE_HOUR = '1h',
-  SIX_HOUR = '6h',
-  TWELVE_HOUR = '12h',
-  TWENTY_FOUR_HOUR = '24h',
-  SEVEN_DAY = '7d',
-  THIRTY_DAY = '30d',
-  CUSTOM = 'custom'
-}
-const dateRangePresets = Object.values(DateRangePreset);
-
-function getPresetRange(preset: DateRangePreset, customStart?: number, customEnd?: number): {
-  sinceMs: number;
-  untilMs: number
-} {
-  const now = Date.now();
-  if (preset === 'custom' && customStart && customEnd) {
-    return { sinceMs: customStart, untilMs: customEnd };
-  }
-  const ranges: Record<Exclude<DateRangePreset, 'custom'>, number> = {
-    [DateRangePreset.ONE_HOUR]: 60 * 60 * 1000,
-    [DateRangePreset.SIX_HOUR]: 6 * 60 * 60 * 1000,
-    [DateRangePreset.TWELVE_HOUR]: 12 * 60 * 60 * 1000,
-    [DateRangePreset.TWENTY_FOUR_HOUR]: 24 * 60 * 60 * 1000,
-    [DateRangePreset.SEVEN_DAY]: 7 * 24 * 60 * 60 * 1000,
-    [DateRangePreset.THIRTY_DAY]: 30 * 24 * 60 * 60 * 1000,
-  };
-  const duration = ranges[preset as Exclude<DateRangePreset, 'custom'>] || ranges['6h'];
-  return { sinceMs: now - duration, untilMs: now };
-}
-
-function formatDateForInput(ms: number): string {
-  const d = new Date(ms);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  const hours = String(d.getHours()).padStart(2, '0');
-  const minutes = String(d.getMinutes()).padStart(2, '0');
-  return `${ year }-${ month }-${ day }T${ hours }:${ minutes }`;
-}
+type ToastMessage = {
+  id: string;
+  message: string;
+  type: "error" | "warning" | "success" | "info";
+};
 
 export function App(): React.ReactElement {
   const [latest, setLatest] = useState<LatestReading | null>(null);
-  const [history, setHistory] = useState<HistoryPoint[]>([]);
-  const [historySub, setHistorySub] = useState<string>('--');
-  const [dateRangePreset, setDateRangePreset] = useState<DateRangePreset>(DateRangePreset.ONE_HOUR);
-  const [customStartMs, setCustomStartMs] = useState<number>(Date.now() - 6 * 60 * 60 * 1000);
-  const [customEndMs, setCustomEndMs] = useState<number>(Date.now());
-  const [timeRangeBounds, setTimeRangeBounds] = useState<{
-    sinceMs: number;
-    untilMs: number
-  }>({ sinceMs: Date.now() - 6 * 60 * 60 * 1000, untilMs: Date.now() });
+  const [relays, setRelays] = useState<RelayStatus[]>([]);
+  const [relaysInMockMode, setRelaysInMockMode] = useState(false);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
+  // WebSocket connection for real-time updates
+  const { isConnected } = useWebSocket({
+    onLatestReading: (reading) => {
+      setLatest(reading);
+    },
+    onRelayUpdate: (relayList) => {
+      if (relayList.length > 0) {
+        setRelays(relayList);
+        setRelaysInMockMode(false);
+      } else {
+        // Mock data for preview when no relays configured
+        console.log("No relays configured, showing mock data");
+        setRelaysInMockMode(true);
+        setRelays([
+          { id: 'relay1', name: 'Living Room Light', state: true, updatedAt: Date.now() },
+          { id: 'relay2', name: 'Fan', state: false, updatedAt: Date.now() },
+          { id: 'relay3', name: 'Heater', state: false, updatedAt: Date.now() },
+        ]);
+      }
+    },
+    onError: (error) => {
+      console.error("WebSocket error:", error);
+    },
+  });
+
+  // Fallback: fetch initial data if WebSocket hasn't connected yet
   useEffect(() => {
-    // AbortController is used to cancel the fetch if the component unmounts
     const controller = new AbortController();
 
-    async function refresh() {
+    async function fetchInitialData() {
       try {
         const l = await fetchLatest(controller.signal);
-        setLatest(l);
-      } catch {
-        // ignore
+        if (l) setLatest(l);
+      } catch (error) {
+        console.error("Failed to fetch initial data:", error);
+      }
+
+      try {
+        const relayList = await fetchRelayStatus(controller.signal);
+        if (relayList.length > 0) {
+          setRelays(relayList);
+          setRelaysInMockMode(false);
+        } else {
+          setRelaysInMockMode(true);
+          setRelays([
+            { id: 'relay1', name: 'Living Room Light', state: true, updatedAt: Date.now() },
+            { id: 'relay2', name: 'Fan', state: false, updatedAt: Date.now() },
+            { id: 'relay3', name: 'Heater', state: false, updatedAt: Date.now() },
+          ]);
+        }
+      } catch (error) {
+        console.error("Failed to fetch relays:", error);
+        setRelaysInMockMode(true);
+        setRelays([
+          { id: 'relay1', name: 'Living Room Light', state: true, updatedAt: Date.now() },
+          { id: 'relay2', name: 'Fan', state: false, updatedAt: Date.now() },
+          { id: 'relay3', name: 'Heater', state: false, updatedAt: Date.now() },
+        ]);
       }
     }
 
-    refresh();
-
-    // refresh every 2 seconds
-    const t = window.setInterval(refresh, 2000);
+    fetchInitialData();
 
     return () => {
       controller.abort();
-      window.clearInterval(t);
     };
   }, []);
 
-  useEffect(() => {
-    const controller = new AbortController();
+  const handleRelayStateChange = (relayId: string, newState: boolean) => {
+    setRelays((prev) =>
+      prev.map((r) => (r.id === relayId ? { ...r, state: newState, updatedAt: Date.now() } : r))
+    );
+  };
 
-    async function refresh() {
-      try {
-        const { sinceMs, untilMs } = getPresetRange(dateRangePreset, customStartMs, customEndMs);
-        setTimeRangeBounds({ sinceMs, untilMs });
-        const points = await fetchHistory({
-          sinceMs,
-          untilMs,
-          limit: 800,
-          bucketMs: 60_000,
-          signal: controller.signal
-        });
-        setHistory(points);
+  const handleRelayNameChange = (relayId: string, newName: string) => {
+    setRelays((prev) =>
+      prev.map((r) => (r.id === relayId ? { ...r, name: newName, updatedAt: Date.now() } : r))
+    );
+  };
 
-        if (points.length === 0) {
-          setHistorySub('No history yet');
-          return;
-        }
+  const showToast = (message: string, type: "error" | "warning" | "success" | "info" = "info") => {
+    const id = `toast-${Date.now()}-${Math.random()}`;
+    setToasts((prev) => [...prev, { id, message, type }]);
+  };
 
-        const firstTs = Number(points[0]!.ts);
-        const lastTs = Number(points[points.length - 1]!.ts);
-        setHistorySub(`${ points.length } points | ${ fmtTimeShort(firstTs) } → ${ fmtTimeShort(lastTs) }`);
-      } catch {
-        setHistorySub('Error loading history');
-      }
-    }
+  const removeToast = (id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
 
-    refresh();
-    const t = window.setInterval(refresh, 10000);
-
-    return () => {
-      controller.abort();
-      window.clearInterval(t);
-    };
-  }, [
-    dateRangePreset,
-    customStartMs,
-    customEndMs
-  ]);
 
   const derived = useMemo(() => {
     if (!latest) return null;
@@ -159,121 +137,85 @@ export function App(): React.ReactElement {
     return { t, h, mix, humiditySub, tempNote, humidityNote };
   }, [latest]);
 
-  const getButtonGroupClass = (index: number) => {
-      if (index === 0) {
-        return 'px-4 py-2 border rounded-l-md text-xs font-medium cursor-pointer transition-all duration-200 '
-      } else if (index === dateRangePresets.length - 1) {
-        return 'px-4 py-2 border rounded-r-md text-xs font-medium cursor-pointer transition-all duration-200 '
-      } else {
-        return 'px-4 py-2 border rounded-none text-xs font-medium cursor-pointer transition-all duration-200 '
-      }
-  };
 
   return (
-    <div
-      className="w-full max-w-[1040px] border border-panel-border rounded-2xl p-5 bg-black/[0.03] backdrop-blur-[10px]">
-      <div className="w-full flex justify-between">
-        <h1 className="m-0 mb-3 text-xl">Sensor Dashboard</h1>
-        <div className="flex items-center gap-2">
-          <img src="/microcontroller.png" alt="" className="w-[36px] h-[36px]"/>
-          esp32-1
-        </div>
+    <>
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-md">
+        {toasts.map((toast) => (
+          <Toast
+            key={toast.id}
+            message={toast.message}
+            type={toast.type}
+            onClose={() => removeToast(toast.id)}
+          />
+        ))}
       </div>
 
-      <div className="grid grid-cols-[repeat(auto-fit,minmax(min(280px,100%),1fr))] gap-3 mt-3">
-        <div className="rounded-2xl border border-panel-border bg-panel p-4 min-w-0 [container-type:inline-size]">
-          <div className="flex items-baseline justify-between gap-3 mb-3">
-            <div className="opacity-80 text-xs tracking-wider">Temperature</div>
-            <div className="opacity-75 text-xs">Cool → Warm</div>
-          </div>
-
-          <div className="circle tempCircle rounded-full mx-auto relative grid place-items-center isolate"
-               style={ { ['--t' as never]: derived?.mix ?? 0.5 } }>
-            <div className="tempGlow" aria-hidden="true"/>
-            <div className="relative z-[2] text-center px-3">
-              <div className="readoutBig font-extrabold leading-none tracking-tight">
-                <span className="readoutPill">{ derived ? fmt1(derived.t) : '--' }</span>
-              </div>
-              <div className="absolute top-0 right-2.5 text-sm font-bold opacity-90">°C</div>
-              <div className="mt-2.5 text-xs opacity-[0.78]">{ derived ? derived.tempNote : 'Waiting…' }</div>
+      <div
+        className="w-full max-w-[960px] border border-panel-border rounded-2xl p-5 backdrop-blur-[10px]">
+        <div className="w-full flex justify-between">
+          <h1 className="m-0 mb-3 text-xl">Sensor Dashboard</h1>
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1.5 text-xs">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-gray-400'}`} />
+              <span className="opacity-60">{isConnected ? 'Live' : 'Connecting...'}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <img src="/microcontroller.png" alt="" className="w-[36px] h-[36px]"/>
+              esp32-1
             </div>
           </div>
         </div>
 
-        <div className="rounded-2xl border border-panel-border bg-panel p-4 min-w-0 [container-type:inline-size]">
-          <div className="flex items-baseline justify-between gap-3 mb-3">
-            <div className="opacity-80 text-xs tracking-wider">Relative Humidity</div>
-            <div className="opacity-75 text-xs">{ derived ? derived.humiditySub : '--' }</div>
-          </div>
-
-          <div className="circle humidityCircle rounded-full mx-auto relative grid place-items-center isolate"
-               style={ { ['--h' as never]: derived?.h ?? 0 } }>
-            <div className="absolute rounded-full overflow-hidden z-[1] inset-[10px]" aria-hidden="true">
-              <div className="waterFill"/>
-            </div>
-            <div className="relative z-[2] text-center px-3">
-              <div className="readoutBig font-extrabold leading-none tracking-tight">
-                <span className="readoutPill">{ derived ? fmt1(derived.h) : '--' }</span>
-              </div>
-              <div className="absolute top-0 right-2.5 text-sm font-bold opacity-90">%</div>
-              <div className="mt-2.5 text-xs opacity-[0.78]">{ derived ? derived.humidityNote : 'Waiting…' }</div>
-            </div>
-          </div>
-        </div>
+      <div className="flex flex-wrap gap-3 mt-3">
+        <MetricCard
+          type="temperature"
+          currentValue={ derived?.t ?? null }
+          note={ derived ? derived.tempNote : 'Waiting…' }
+          subtitle="Cool → Warm"
+          mix={ derived?.mix }
+          latestReading={ latest }
+        />
+        <MetricCard
+          type="humidity"
+          currentValue={ derived?.h ?? null }
+          note={ derived ? derived.humidityNote : 'Waiting…' }
+          subtitle={ derived ? derived.humiditySub : '--' }
+          latestReading={ latest }
+        />
       </div>
 
-      <div className="rounded-2xl border border-panel-border bg-panel p-4 min-w-0 mt-3">
-        <div className="flex items-baseline justify-between gap-3 mb-3">
-          <div className="opacity-80 text-xs tracking-wider">Timeline</div>
-          <div className="opacity-75 text-xs">{ historySub }</div>
-        </div>
-
-        <div className="mb-4">
-          <div className="flex mb-3 justify-end">
-            { dateRangePresets.map((preset, index, array) => (
-              <button
-                key={ preset }
-                className={ `${ getButtonGroupClass(index) } ${ dateRangePreset === preset
-                  ? 'bg-blue-500/20 border-blue-500/50 text-blue-500 font-semibold'
-                  : 'border-panel-border bg-gray-500/[0.08] hover:bg-gray-500/[0.15] hover:border-gray-500/40' }` }
-                onClick={ () => setDateRangePreset(preset) }
-              >
-                { preset === 'custom' ? 'Custom' : preset.toUpperCase() }
-              </button>
+      { relays.length > 0 && (
+        <div className="mt-3">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-sm font-medium opacity-80">Relay Controls</h2>
+            { relaysInMockMode && (
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-yellow-500/10 border border-yellow-500/30 text-yellow-600 dark:text-yellow-500 text-xs">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <span>Preview Mode - Changes won't be saved</span>
+              </div>
+            ) }
+          </div>
+          <div className="flex flex-wrap gap-3">
+            { relays.map((relay) => (
+              <RelayControl
+                key={ relay.id }
+                relay={ relay }
+                onStateChange={ handleRelayStateChange }
+                onNameChange={ handleRelayNameChange }
+                onError={ showToast }
+              />
             )) }
           </div>
-          { dateRangePreset === 'custom' && (
-            <div className="flex flex-wrap gap-3 p-3 rounded-lg bg-gray-500/[0.08]">
-              <label className="flex flex-col gap-1.5 flex-1 min-w-[200px]">
-                <span className="text-xs font-medium opacity-80">From:</span>
-                <input
-                  type="datetime-local"
-                  className="px-3 py-2 border border-panel-border rounded-md bg-white/5 text-inherit text-[13px] font-[inherit] focus:outline-none focus:border-blue-500/50 focus:bg-white/[0.08]"
-                  value={ formatDateForInput(customStartMs) }
-                  onChange={ (e) => setCustomStartMs(new Date(e.target.value).getTime()) }
-                />
-              </label>
-              <label className="flex flex-col gap-1.5 flex-1 min-w-[200px]">
-                <span className="text-xs font-medium opacity-80">To:</span>
-                <input
-                  type="datetime-local"
-                  className="px-3 py-2 border border-panel-border rounded-md bg-white/5 text-inherit text-[13px] font-[inherit] focus:outline-none focus:border-blue-500/50 focus:bg-white/[0.08]"
-                  value={ formatDateForInput(customEndMs) }
-                  onChange={ (e) => setCustomEndMs(new Date(e.target.value).getTime()) }
-                />
-              </label>
-            </div>
-          ) }
         </div>
-
-        <div className="relative w-full h-[clamp(220px,38vh,360px)]">
-          <TimelineChart points={ history } timeRange={ timeRangeBounds }/>
-        </div>
-      </div>
+      ) }
 
       <div className="mt-3 text-xs opacity-75">
         { latest ? `Last update: ${ fmtTime(latest.updatedAt) }` : 'Waiting for first reading...' }
       </div>
     </div>
+    </>
   );
 }

@@ -65,11 +65,12 @@ export function App(): React.ReactElement {
     const h = clamp(Number(latest.humidity), 0, 100);
     const mix = tempToMix(t);
 
+    const tempSub = t >= 25 ? "Warm" : t <= 18 ? "Cool" : "Comfortable";
     const humiditySub = h >= 70 ? "Humid" : h <= 35 ? "Dry" : "Comfortable";
     const tempNote = t >= 25 ? "Warm" : t <= 18 ? "Cool" : "Comfortable";
     const humidityNote = h >= 70 ? "Air feels heavy" : h <= 35 ? "Consider a humidifier" : "Nice range";
 
-    return { t, h, mix, humiditySub, tempNote, humidityNote };
+    return { t, h, mix, tempSub, humiditySub, tempNote, humidityNote };
   }, [latest]);
 
   return (
@@ -105,7 +106,7 @@ export function App(): React.ReactElement {
             type="temperature"
             currentValue={derived?.t ?? null}
             note={derived ? derived.tempNote : "Waiting…"}
-            subtitle="Cool → Warm"
+            subtitle={derived ? derived.tempSub : "--"}
             mix={derived?.mix}
             latestReading={latest}
           />

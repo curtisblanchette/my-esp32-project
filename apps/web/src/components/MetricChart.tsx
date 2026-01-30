@@ -9,16 +9,9 @@ import {
   Legend,
   Filler,
 } from "chart.js";
+import { fmtTime, fmtTimeShort } from "../lib/format";
 
 Chart.register(LineController, LineElement, PointElement, LinearScale, Tooltip, Legend, Filler);
-
-function fmtTime(ms: number): string {
-  return new Date(ms).toLocaleString();
-}
-
-function fmtTimeShort(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
 
 export interface MetricChartProps {
   data: Array<{ x: number; y: number }>;
@@ -113,12 +106,12 @@ export function MetricChart(props: MetricChartProps): React.ReactElement {
 
     const chart = chartRef.current;
     chart.data.datasets[0]!.data = props.data as unknown as never[];
-    
+
     if (chart.options.scales?.x) {
       chart.options.scales.x.min = axisRange.min;
       chart.options.scales.x.max = axisRange.max;
     }
-    
+
     chart.update("none");
   }, [props.data, axisRange, props.label, props.color, props.backgroundColor, props.yMin, props.yMax, props.yTickFormat]);
 

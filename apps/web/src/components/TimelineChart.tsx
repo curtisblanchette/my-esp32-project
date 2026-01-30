@@ -9,20 +9,15 @@ import {
   Legend,
   Filler,
 } from "chart.js";
-
 import type { HistoryPoint } from "../api";
+import { fmtTime, fmtTimeShort } from "../lib/format";
 
 Chart.register(LineController, LineElement, PointElement, LinearScale, Tooltip, Legend, Filler);
 
-function fmtTime(ms: number): string {
-  return new Date(ms).toLocaleString();
-}
-
-function fmtTimeShort(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-export function TimelineChart(props: { points: HistoryPoint[]; timeRange: { sinceMs: number; untilMs: number } }): React.ReactElement {
+export function TimelineChart(props: {
+  points: HistoryPoint[];
+  timeRange: { sinceMs: number; untilMs: number };
+}): React.ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const chartRef = useRef<Chart | null>(null);
 
@@ -132,12 +127,12 @@ export function TimelineChart(props: { points: HistoryPoint[]; timeRange: { sinc
     const chart = chartRef.current;
     chart.data.datasets[0]!.data = series.temp as unknown as never[];
     chart.data.datasets[1]!.data = series.humidity as unknown as never[];
-    
+
     if (chart.options.scales?.x) {
       chart.options.scales.x.min = axisRange.min;
       chart.options.scales.x.max = axisRange.max;
     }
-    
+
     chart.update("none");
   }, [series, axisRange]);
 

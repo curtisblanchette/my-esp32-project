@@ -1,0 +1,52 @@
+rules:
+  # NOTE: Thresholds lowered for testing - adjust for production
+  - name: high_temp_alert
+    description: "Turn on fan when temperature exceeds threshold"
+    condition:
+      sensor: temp1
+      operator: ">"
+      threshold: 25  # Production: 28
+      duration_seconds: 15  # Production: 30
+    action:
+      target: relay1
+      action: set
+      value: true
+      reason: "Temperature exceeded 20°C for 5 seconds (test mode)"
+
+  - name: low_temp_restore
+    description: "Turn off fan when temperature drops below threshold"
+    condition:
+      sensor: temp1
+      operator: "<"
+      threshold: 18  # Production: 25
+      duration_seconds: 10  # Production: 60
+    action:
+      target: relay1
+      action: set
+      value: false
+      reason: "Temperature dropped below 18°C for 10 seconds (test mode)"
+
+  - name: high_humidity_alert
+    description: "Alert when humidity is too high"
+    condition:
+      sensor: hum1
+      operator: ">"
+      threshold: 60  # Production: 80
+      duration_seconds: 10  # Production: 120
+    action:
+      target: relay1
+      action: set
+      value: true
+      reason: "Humidity exceeded 40% for 10 seconds (test mode)"
+  - name: low_humidity_restore
+    description: "Turn off "
+
+# LLM escalation settings
+llm:
+  enabled: true
+  model: "phi3:mini"
+  # Escalate to LLM when these conditions are met
+  escalation_triggers:
+    - rapid_change: 5  # degrees per minute
+    - conflicting_rules: true
+    - unknown_pattern: true

@@ -213,6 +213,17 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
 - `min-w-0` on flex children prevents overflow issues
 - `overflow-hidden` on cards can clip content if not careful
 
+## Claude Skills
+
+Project-specific skills in `.claude/skills/`:
+
+| Skill | Description |
+|-------|-------------|
+| `/commit` | Create git commits with conventional commit messages |
+| `/pr` | Create pull requests with formatted title and description |
+| `/release` | Create git tags and GitHub releases with auto-generated notes |
+| `/docs` | Update README.md and CLAUDE.md to reflect code changes |
+
 ## Preferences
 - prefer `docker compose ...` over `docker-compose ...`
 - Use the latest installation instructions for libraries and packages. Ensure compatibility with system dependencies. Always prefer latest versions.

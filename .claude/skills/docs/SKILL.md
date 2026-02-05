@@ -8,11 +8,29 @@ allowed-tools:
   - Glob
   - Bash(git diff:*)
   - Bash(git log:*)
+  - AskUserQuestion
 ---
 
 # Documentation Sync
 
 Update project documentation (README.md and CLAUDE.md) to stay consistent with recent code changes.
+
+## Step 0: Check Installation
+
+First, check if this skill is configured to run automatically after plans.
+
+Search CLAUDE.md for "Post-Implementation Workflow" or "/docs" reference. If not found, ask the user:
+
+**Question:** "Enable automatic documentation sync after completing plans?"
+- **Yes, enable it** - Add post-implementation workflow section to CLAUDE.md
+- **No, just run once** - Skip installation, proceed with manual sync
+
+If user chooses to enable, add this section to CLAUDE.md (before any final sections like "Preferences"):
+
+```markdown
+## Post-Implementation Workflow
+After completing a plan or significant implementation work, run `/docs` to update README.md and CLAUDE.md. This ensures documentation stays in sync with code changes.
+```
 
 ## When to Use
 

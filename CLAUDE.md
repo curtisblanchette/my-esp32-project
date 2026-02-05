@@ -70,7 +70,7 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
 
 **Telemetry**
 - `GET /api/latest` - Current sensor reading
-- `GET /api/history` - Historical data with optional bucketing (`sinceMs`, `untilMs`, `bucketMs`)
+- `GET /api/history` - Historical data with optional bucketing (`sinceMs`, `untilMs`, `bucketMs`, `deviceId`)
 
 **Relays**
 - `GET /api/relays` - All relay configurations
@@ -96,7 +96,7 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
 
 **Voice (Proxy to AI Service)**
 - `POST /api/voice/transcribe` - Audio → Text (Vosk STT)
-- `POST /api/voice/synthesize` - Text → Audio (Piper TTS)
+- `POST /api/voice/synthesize` - Text → Audio (Kokoro TTS)
 - `POST /api/voice/command` - Full STT → LLM → command pipeline
 - `POST /api/voice/command/audio` - Full pipeline with audio response
 
@@ -119,11 +119,15 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
 - `apps/api/src/lib/redis.ts` - Redis client with 48hr TTL storage
 - `apps/api/src/lib/sqlite.ts` - SQLite queries + relay config
 - `apps/api/src/routes/` - API endpoint handlers (telemetry, relays, devices, commands, events, chat, voice)
+- `apps/api/src/routes/utils/analysis.ts` - Sensor data analysis and formatting
+- `apps/api/src/routes/utils/timeframe.ts` - Time range preset parsing
 
 **Web:**
 - `apps/web/src/App.tsx` - Main dashboard component
-- `apps/web/src/hooks/useWebSocket.ts` - WebSocket connection management
-- `apps/web/src/hooks/useRelays.ts` - Relay state management
+- `apps/web/src/hooks/useWebSocket.ts` - WebSocket connection with device/event/command handlers
+- `apps/web/src/hooks/useRelays.ts` - Relay state management with offline detection
+- `apps/web/src/hooks/useOptimisticToggle.ts` - Toggle with ack timeout handling
+- `apps/web/src/hooks/useHistory.ts` - History fetching with deviceId filter
 - `apps/web/src/api.ts` - REST + WebSocket client functions
 - `apps/web/src/components/` - UI components (SensorCard, RelayControl, ChatInput, RecentActivity)
 
@@ -133,7 +137,7 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
 - `apps/ai/src/services/decision_engine.py` - Rules engine + LLM escalation
 - `apps/ai/src/services/mqtt_client.py` - MQTT subscriber/publisher
 - `apps/ai/src/services/ollama_client.py` - LLM integration
-- `apps/ai/src/services/voice_service.py` - STT (Vosk) + TTS (Piper)
+- `apps/ai/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
 - `apps/ai/config/rules.yaml` - Automation rules
 
 **Device:**
@@ -161,7 +165,9 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
 - `API_URL` - Node.js API URL
 - `HTTP_PORT` - FastAPI server port
 - `RULES_PATH` - Path to rules.yaml
-- `PIPER_MODEL_PATH`, `VOSK_MODEL_PATH` - Voice model paths
+- `VOSK_MODEL_PATH` - Vosk STT model path
+- `KOKORO_MODEL_PATH`, `KOKORO_VOICES_PATH` - Kokoro TTS model paths
+- `KOKORO_VOICE`, `KOKORO_SPEED`, `KOKORO_LANG` - Kokoro TTS settings
 
 ## Web UI Architecture
 

@@ -6,7 +6,7 @@ A monorepo for ESP32 IoT devices with AI-powered automation. These embedded devi
 - **COLD data** aggregated in SQLite (historical trends)
 - **AI Orchestrator** runs locally with Ollama for intelligent automation
 - **React Dashboard** displays real-time sensor data, charts, and AI activity
-- **Voice Interface** with speech-to-text (Vosk) and text-to-speech (Piper)
+- **Voice Interface** with speech-to-text (Vosk) and text-to-speech (Kokoro)
 
 ## Preview
 
@@ -47,7 +47,7 @@ flowchart TB
         AI["🤖 AI Orchestrator<br/>Python :8000"]
         Ollama["🧠 Ollama LLM<br/>:11434"]
         Vosk["🎤 Vosk STT"]
-        Piper["🔊 Piper TTS"]
+        Kokoro["🔊 Kokoro TTS"]
     end
 
     subgraph Browser["🌐 Browser"]
@@ -67,7 +67,7 @@ flowchart TB
 
     AI --> Ollama
     AI --> Vosk
-    AI --> Piper
+    AI --> Kokoro
     AI -->|HTTP proxy| API
 
     WEB -->|proxy| API
@@ -208,7 +208,7 @@ flowchart LR
     subgraph PythonAI["AI Service :8000"]
         STT["Vosk STT"]
         LLM["Ollama LLM"]
-        TTS["Piper TTS"]
+        TTS["Kokoro TTS"]
     end
 
     subgraph Output
@@ -292,7 +292,7 @@ This starts everything:
 | **API Server** | `3000` | Docker | REST + WebSocket |
 | **Web Dashboard** | `5173` | Docker | React UI |
 | **Ollama** | `11434` | Host (Metal GPU) | LLM inference |
-| **AI Orchestrator** | `8000` | Host (Piper TTS) | Rules + Voice |
+| **AI Orchestrator** | `8000` | Host (Kokoro TTS) | Rules + Voice |
 
 The script automatically:
 - Starts Ollama and waits for it to be ready
@@ -305,7 +305,7 @@ To stop everything:
 ./tools/stop.sh
 ```
 
-> **Note:** AI services run natively on the host for performance reasons (Metal GPU acceleration for Ollama, Piper TTS compatibility for the orchestrator). The API container connects to them via `host.docker.internal`.
+> **Note:** AI services run natively on the host for performance reasons (Metal GPU acceleration for Ollama, Kokoro TTS for the orchestrator). The API container connects to them via `host.docker.internal`.
 
 ### 2. Access the Dashboard
 Open your browser to:
@@ -499,10 +499,9 @@ flowchart TB
 | Table | Purpose |
 |-------|---------|
 | `telemetry` | Historical sensor readings |
-| `relay_config` | Relay names and states |
 | `command` | Command history with status |
 | `event` | Device events log |
-| `device` | Device registry |
+| `device` | Device registry with actuator state |
 
 ### API Service
 - **Purpose:** REST API for querying telemetry data and managing device state
@@ -514,7 +513,7 @@ flowchart TB
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/api/latest` | GET | Current sensor reading |
-| `/api/history` | GET | Historical data with bucketing |
+| `/api/history` | GET | Historical data with bucketing (`deviceId` filter) |
 | `/api/relays` | GET/POST | Relay configuration |
 | `/api/relays/:id` | POST/PATCH/DELETE | Individual relay control |
 | `/api/commands` | GET/POST | Command history |
@@ -526,10 +525,13 @@ flowchart TB
 **WebSocket Endpoint:** `ws://localhost:3000/ws`
 
 Message Types:
-- `{type: "latest", data: LatestReading}` - Sensor updates
+- `{type: "latest", data: LatestReading}` - Sensor updates (per device)
 - `{type: "relays", data: RelayConfig[]}` - Relay state changes
 - `{type: "devices", data: Device[]}` - Device registry updates
 - `{type: "commands", data: Command[]}` - Command history
+- `{type: "command", data: Command}` - Single command broadcast
+- `{type: "events", data: DeviceEvent[]}` - Device events
+- `{type: "event", data: DeviceEvent}` - Single event broadcast
 
 ### Web Dashboard
 - **Purpose:** React SPA for visualizing telemetry data
@@ -569,7 +571,7 @@ flowchart TB
 1. **Rules Engine** - Fast threshold-based rules with duration and cooldown support
 2. **LLM Escalation** - Complex patterns (e.g., rapid temperature changes) escalate to Ollama
 3. **Direct MQTT** - AI subscribes to telemetry and publishes commands directly
-4. **Voice Interface** - STT (Vosk) → LLM → TTS (Piper) pipeline
+4. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
 
 ### Configuration
 
@@ -637,7 +639,7 @@ The AI service supports voice interaction through a complete STT → LLM → TTS
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /voice/transcribe` | Audio → Text (Vosk) |
-| `POST /voice/synthesize` | Text → Audio (Piper) |
+| `POST /voice/synthesize` | Text → Audio (Kokoro) |
 | `POST /voice/command` | Full pipeline: Audio → Text → LLM → Response |
 | `POST /voice/command/audio` | Full pipeline with audio response |
 
@@ -870,5 +872,5 @@ mosquitto_pub -h localhost -p 1883 -t test -m "hello"
 | Dashboard shows "Disconnected" | WebSocket connection failed | Check API logs, verify port 3000 |
 | No real-time updates | MQTT not connected | Check Mosquitto logs, verify port 1883 |
 | AI commands not executing | Rules not matching | Check `rules.yaml`, verify sensor IDs |
-| Voice commands not working | STT/TTS models missing | Download Vosk/Piper models |
+| Voice commands not working | STT/TTS models missing | Download Vosk/Kokoro models |
 | "host.docker.internal" errors | Docker networking issue | Use host network mode or local IP |

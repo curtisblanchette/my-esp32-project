@@ -1,7 +1,7 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import path from "node:path";
 
-import { createApiRouter } from "./routes/api.js";
+import { createApiRouter } from "./routes/index.js";
 import { createRootRouter } from "./routes/root.js";
 
 export function createApp() {

@@ -14,6 +14,9 @@ const MQTT_TOPIC_PREFIX = process.env.MQTT_TOPIC_PREFIX ?? "/device";
 
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
 
+const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://host.docker.internal:11434";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "llama3.2:3b";
+
 const mqttUrl = MQTT_URL ?? `mqtt://${MQTT_HOST}:${MQTT_PORT}`;
 
 export const config = {
@@ -28,4 +31,8 @@ export const config = {
   },
   topicPrefix: MQTT_TOPIC_PREFIX,
   redisUrl: REDIS_URL,
+  ollama: {
+    url: OLLAMA_URL,
+    model: OLLAMA_MODEL,
+  },
 } as const;

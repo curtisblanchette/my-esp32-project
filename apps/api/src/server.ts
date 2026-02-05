@@ -4,6 +4,7 @@ import { createApp } from "./app.js";
 import { getDb } from "./lib/sqlite.js";
 import { initMqttTelemetry } from "./services/mqttTelemetry.js";
 import { startAggregationJob } from "./services/aggregationJob.js";
+import { startCommandExpirationJob } from "./services/commandExpirationJob.js";
 import { createWebSocketServer } from "./services/websocket.js";
 
 getDb();
@@ -11,6 +12,7 @@ getDb();
 initMqttTelemetry();
 
 startAggregationJob();
+startCommandExpirationJob();
 
 const app = createApp();
 const server = createServer(app);

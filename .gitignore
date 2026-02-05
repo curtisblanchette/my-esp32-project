@@ -1,3 +1,4 @@
 .env
 device/secrets.py
+device/registry.json
 data/telemetry.sqlite

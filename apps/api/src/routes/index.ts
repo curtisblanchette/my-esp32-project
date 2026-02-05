@@ -5,6 +5,7 @@ import { createEventsRouter } from "./events.js";
 import { createDevicesRouter } from "./devices.js";
 import { createRelaysRouter } from "./relays.js";
 import { createChatRouter } from "./chat.js";
+import { createVoiceRouter } from "./voice.js";
 
 export function createApiRouter(): Router {
   const router = Router();
@@ -26,6 +27,9 @@ export function createApiRouter(): Router {
 
   // Chat routes: /api/chat
   router.use("/chat", createChatRouter());
+
+  // Voice routes: /api/voice
+  router.use("/voice", createVoiceRouter());
 
   return router;
 }

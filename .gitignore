@@ -2,3 +2,8 @@
 device/secrets.py
 device/registry.json
 data/telemetry.sqlite
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

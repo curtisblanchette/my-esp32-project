@@ -1,25 +1,14 @@
 import { useState, useEffect, useCallback } from "react";
 import { fetchRelayStatus, type RelayStatus } from "../api";
 
-const MOCK_RELAYS: RelayStatus[] = [
-  { id: "relay1", name: "Living Room Light", state: true, updatedAt: Date.now() },
-  { id: "relay2", name: "Fan", state: false, updatedAt: Date.now() },
-  { id: "relay3", name: "Heater", state: false, updatedAt: Date.now() },
-];
-
 export function useRelays() {
   const [relays, setRelays] = useState<RelayStatus[]>([]);
-  const [isInMockMode, setIsInMockMode] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const applyRelays = useCallback((relayList: RelayStatus[]) => {
-    if (relayList.length > 0) {
-      setRelays(relayList);
-      setIsInMockMode(false);
-    } else {
-      console.log("No relays configured, showing mock data");
-      setIsInMockMode(true);
-      setRelays(MOCK_RELAYS.map((r) => ({ ...r, updatedAt: Date.now() })));
-    }
+    setRelays(relayList);
+    setError(null);
   }, []);
 
   // Fetch initial relay data
@@ -27,13 +16,17 @@ export function useRelays() {
     const controller = new AbortController();
 
     async function loadRelays() {
+      setIsLoading(true);
       try {
         const relayList = await fetchRelayStatus(controller.signal);
         applyRelays(relayList);
-      } catch (error) {
-        console.error("Failed to fetch relays:", error);
-        setIsInMockMode(true);
-        setRelays(MOCK_RELAYS.map((r) => ({ ...r, updatedAt: Date.now() })));
+      } catch (err) {
+        if (err instanceof Error && err.name !== "AbortError") {
+          console.error("Failed to fetch relays:", err);
+          setError("Failed to load relays");
+        }
+      } finally {
+        setIsLoading(false);
       }
     }
 
@@ -56,9 +49,14 @@ export function useRelays() {
     );
   }, []);
 
+  // Check if any device is offline
+  const hasOfflineDevices = relays.some((r) => r.deviceOnline === false);
+
   return {
     relays,
-    isInMockMode,
+    isLoading,
+    error,
+    hasOfflineDevices,
     applyRelays,
     handleStateChange,
     handleNameChange,

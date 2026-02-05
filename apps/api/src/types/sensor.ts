@@ -4,4 +4,5 @@ export type SensorReading = {
   updatedAt: number;
   sourceIp?: string;
   sourceTopic?: string;
+  deviceId?: string;
 };

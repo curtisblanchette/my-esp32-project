@@ -6,6 +6,7 @@ export type RedisReading = {
   temp: number;
   humidity: number;
   sourceTopic: string | null;
+  deviceId: string | null;
 };
 
 let redisClient: ReturnType<typeof createClient> | null = null;
@@ -31,13 +32,16 @@ export async function getRedisClient() {
 
 export async function storeReading(reading: RedisReading): Promise<void> {
   const client = await getRedisClient();
-  const key = `reading:${reading.ts}`;
+  // Include deviceId in key for per-device storage (allows same timestamp from different devices)
+  const key = reading.deviceId
+    ? `reading:${reading.deviceId}:${reading.ts}`
+    : `reading:${reading.ts}`;
   const ttl = 48 * 60 * 60;
 
   await client.setEx(key, ttl, JSON.stringify(reading));
 }
 
-export async function getReadingsInRange(sinceMs: number, untilMs: number): Promise<RedisReading[]> {
+export async function getReadingsInRange(sinceMs: number, untilMs: number, deviceId?: string): Promise<RedisReading[]> {
   const client = await getRedisClient();
   const readings: RedisReading[] = [];
 
@@ -57,6 +61,8 @@ export async function getReadingsInRange(sinceMs: number, untilMs: number): Prom
     try {
       const reading = JSON.parse(value) as RedisReading;
       if (reading.ts >= sinceMs && reading.ts <= untilMs) {
+        // Filter by deviceId if specified
+        if (deviceId && reading.deviceId !== deviceId) continue;
         readings.push(reading);
       }
     } catch (e) {

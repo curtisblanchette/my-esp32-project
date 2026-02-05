@@ -7,3 +7,17 @@ data/telemetry.sqlite
 __pycache__/
 *.pyc
 *.pyo
+
+# Node
+node_modules/
+
+# Build outputs
+dist/
+apps/web/dist/
+
+# IDE
+.idea/
+
+# Local data
+apps/api/data/
+apps/ai/models/

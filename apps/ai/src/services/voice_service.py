@@ -1,5 +1,5 @@
 """
-Voice processing service using Vosk (STT) and Piper (TTS).
+Voice processing service using Vosk (STT) and Kokoro (TTS).
 """
 
 import io
@@ -15,8 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Lazy imports for optional dependencies
 _vosk = None
-_piper_voice = None
-_piper_phonemize = None
+_kokoro = None
 
 
 def _get_vosk():
@@ -27,28 +26,26 @@ def _get_vosk():
     return _vosk
 
 
-def _get_piper_phonemize():
-    global _piper_phonemize
-    if _piper_phonemize is None:
-        import piper_phonemize
-        _piper_phonemize = piper_phonemize
-    return _piper_phonemize
-
-
 class VoiceService:
     """Service for speech-to-text and text-to-speech processing."""
 
     def __init__(
         self,
         vosk_model_path: str | Path | None = None,
-        piper_model_path: str | Path | None = None,
-        piper_voice: str = "en-us",
+        kokoro_model_path: str | Path | None = None,
+        kokoro_voices_path: str | Path | None = None,
+        kokoro_voice: str = "af_heart",
+        kokoro_speed: float = 1.0,
+        kokoro_lang: str = "en-us",
     ):
         self.vosk_model_path = Path(vosk_model_path) if vosk_model_path else None
-        self.piper_model_path = Path(piper_model_path) if piper_model_path else None
-        self.piper_voice = piper_voice
+        self.kokoro_model_path = Path(kokoro_model_path) if kokoro_model_path else None
+        self.kokoro_voices_path = Path(kokoro_voices_path) if kokoro_voices_path else None
+        self.kokoro_voice = kokoro_voice
+        self.kokoro_speed = kokoro_speed
+        self.kokoro_lang = kokoro_lang
         self._vosk_model = None
-        self._piper_model = None
+        self._kokoro_model = None
 
     def _load_vosk_model(self):
         """Lazy load Vosk model."""
@@ -98,56 +95,53 @@ class VoiceService:
         logger.info(f"Transcribed ({len(pcm_data)} bytes audio): '{text}'")
         return text
 
-    def _load_piper_model(self):
-        """Lazy load Piper model."""
-        if self._piper_model is None and self.piper_model_path:
-            from piper import PiperVoice
-            if not self.piper_model_path.exists():
-                raise FileNotFoundError(f"Piper model not found: {self.piper_model_path}")
-            self._piper_model = PiperVoice.load(str(self.piper_model_path))
-            logger.info(f"Loaded Piper model from {self.piper_model_path}")
-        return self._piper_model
+    def _load_kokoro_model(self):
+        """Lazy load Kokoro model."""
+        if self._kokoro_model is None and self.kokoro_model_path and self.kokoro_voices_path:
+            from kokoro_onnx import Kokoro
+            if not self.kokoro_model_path.exists():
+                raise FileNotFoundError(f"Kokoro model not found: {self.kokoro_model_path}")
+            if not self.kokoro_voices_path.exists():
+                raise FileNotFoundError(f"Kokoro voices not found: {self.kokoro_voices_path}")
+            self._kokoro_model = Kokoro(
+                str(self.kokoro_model_path),
+                str(self.kokoro_voices_path),
+            )
+            logger.info(f"Loaded Kokoro model from {self.kokoro_model_path}")
+        return self._kokoro_model
 
-    def synthesize(self, text: str, sample_rate: int = 22050) -> bytes:
+    def synthesize(self, text: str) -> bytes:
         """
-        Synthesize text to speech using Piper.
+        Synthesize text to speech using Kokoro.
 
         Args:
             text: Text to synthesize
-            sample_rate: Output sample rate (Piper uses model's native rate)
 
         Returns:
-            WAV audio bytes
+            WAV audio bytes (24kHz sample rate)
         """
-        voice = self._load_piper_model()
-        if voice is None:
-            raise RuntimeError("Piper model not loaded")
+        kokoro = self._load_kokoro_model()
+        if kokoro is None:
+            raise RuntimeError("Kokoro model not loaded")
 
         try:
-            piper_phonemize = _get_piper_phonemize()
-
-            # Phonemize and get IDs
-            phonemes_list = piper_phonemize.phonemize_espeak(text, self.piper_voice)
-
-            # Synthesize each sentence and concatenate
-            audio_chunks = []
-            for phonemes in phonemes_list:
-                phoneme_ids = piper_phonemize.phoneme_ids_espeak(phonemes)
-                audio = voice.phoneme_ids_to_audio(phoneme_ids)
-                audio_chunks.append(audio)
-
-            # Concatenate all audio
-            full_audio = np.concatenate(audio_chunks) if len(audio_chunks) > 1 else audio_chunks[0]
+            # Generate audio using Kokoro
+            samples, sample_rate = kokoro.create(
+                text,
+                voice=self.kokoro_voice,
+                speed=self.kokoro_speed,
+                lang=self.kokoro_lang,
+            )
 
             # Convert to int16
-            audio_int16 = (full_audio * 32767).astype(np.int16)
+            audio_int16 = (samples * 32767).astype(np.int16)
 
             # Write to WAV buffer
             wav_buffer = io.BytesIO()
             with wave.open(wav_buffer, 'wb') as wav:
                 wav.setnchannels(1)
                 wav.setsampwidth(2)
-                wav.setframerate(voice.config.sample_rate)
+                wav.setframerate(sample_rate)
                 wav.writeframes(audio_int16.tobytes())
 
             wav_buffer.seek(0)
@@ -155,8 +149,18 @@ class VoiceService:
             return wav_buffer.getvalue()
 
         except Exception as e:
-            logger.error(f"Piper TTS failed: {e}")
+            logger.error(f"Kokoro TTS failed: {e}")
             raise RuntimeError(f"TTS synthesis failed: {e}")
+
+    def set_voice(self, voice: str) -> None:
+        """Set the TTS voice."""
+        self.kokoro_voice = voice
+        logger.info(f"TTS voice set to: {voice}")
+
+    def set_speed(self, speed: float) -> None:
+        """Set the TTS speed."""
+        self.kokoro_speed = speed
+        logger.info(f"TTS speed set to: {speed}")
 
     def _convert_to_pcm(self, audio_data: bytes, target_rate: int) -> bytes:
         """Convert various audio formats to PCM 16-bit mono."""
@@ -250,4 +254,9 @@ class VoiceService:
 
     def is_tts_available(self) -> bool:
         """Check if text-to-speech is available."""
-        return self.piper_model_path is not None and self.piper_model_path.exists()
+        return (
+            self.kokoro_model_path is not None
+            and self.kokoro_model_path.exists()
+            and self.kokoro_voices_path is not None
+            and self.kokoro_voices_path.exists()
+        )

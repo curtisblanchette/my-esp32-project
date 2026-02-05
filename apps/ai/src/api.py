@@ -10,7 +10,14 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from .config import VOSK_MODEL_PATH, PIPER_MODEL_PATH
+from .config import (
+    VOSK_MODEL_PATH,
+    KOKORO_MODEL_PATH,
+    KOKORO_VOICES_PATH,
+    KOKORO_VOICE,
+    KOKORO_SPEED,
+    KOKORO_LANG,
+)
 from .services.voice_service import VoiceService
 from .services.shared import get_shared_services
 
@@ -38,7 +45,11 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing voice service...")
     voice_service = VoiceService(
         vosk_model_path=VOSK_MODEL_PATH,
-        piper_model_path=PIPER_MODEL_PATH,
+        kokoro_model_path=KOKORO_MODEL_PATH,
+        kokoro_voices_path=KOKORO_VOICES_PATH,
+        kokoro_voice=KOKORO_VOICE,
+        kokoro_speed=KOKORO_SPEED,
+        kokoro_lang=KOKORO_LANG,
     )
 
     # Note: Ollama client is shared and initialized by the orchestrator
@@ -120,9 +131,9 @@ async def transcribe_audio(audio: UploadFile = File(...)):
 @app.post("/voice/synthesize")
 async def synthesize_speech(request: ChatRequest):
     """
-    Synthesize text to speech using Piper.
+    Synthesize text to speech using Kokoro.
 
-    Returns WAV audio data.
+    Returns WAV audio data (24kHz).
     """
     if not voice_service or not voice_service.is_tts_available():
         raise HTTPException(status_code=503, detail="Text-to-speech service not available")
@@ -242,34 +253,27 @@ async def chat(request: ChatRequest):
 
 
 def _process_with_llm(user_message: str) -> dict:
-    """Process user message with Ollama and extract structured response."""
-    import json
-
-    system_prompt = """You are a helpful smart home assistant. You can control devices and provide information.
-
-Available commands:
-- Turn relay1 ON/OFF: {"action": "command", "target": "relay1", "value": true/false, "response": "your response"}
-- Check sensors: {"action": "query", "target": "sensors", "response": "your response"}
-- No action needed: {"action": "none", "response": "your response"}
-
-Always respond with valid JSON. The "response" field should contain a natural language response to say to the user."""
+    """Process user message via Node.js API for consistent prompt handling."""
+    import httpx
+    from .config import API_URL
 
     try:
-        ollama = _get_ollama()
-        if not ollama:
-            return {"action": "none", "response": "LLM service not available."}
+        with httpx.Client(timeout=60.0) as client:
+            response = client.post(
+                f"{API_URL}/api/chat",
+                json={"message": user_message},
+            )
+            response.raise_for_status()
+            data = response.json()
 
-        response_text = ollama.generate(
-            prompt=user_message,
-            system=system_prompt,
-            format="json",
-        )
-
-        try:
-            return json.loads(response_text)
-        except json.JSONDecodeError:
-            return {"action": "none", "response": response_text}
-
+            # Map Node.js response format to Python API format
+            action_data = data.get("action", {})
+            return {
+                "action": action_data.get("type") if action_data else "none",
+                "target": action_data.get("target") if action_data else None,
+                "value": action_data.get("value") if action_data else None,
+                "response": data.get("reply", ""),
+            }
     except Exception as e:
-        logger.error(f"LLM processing error: {e}")
+        logger.error(f"Error calling Node.js API: {e}")
         return {"action": "none", "response": "I'm having trouble processing that right now."}

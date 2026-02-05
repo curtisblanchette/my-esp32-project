@@ -9,3 +9,6 @@ class LED:
 
     def off(self):
         self.pin.off()
+
+    def value(self):
+        return self.pin.value()

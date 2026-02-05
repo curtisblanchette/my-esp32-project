@@ -61,7 +61,8 @@ class HomeHubClient:
             name: Human-readable name (e.g., "Garage Light")
             **kwargs: Additional properties (e.g., min=0, max=100 for dimmers)
         """
-        actuator = {"id": id, "type": type, "name": name, **kwargs}
+        actuator = {"id": id, "type": type, "name": name}
+        actuator.update(kwargs)
         self.capabilities["actuators"].append(actuator)
 
     def publish_birth(self, telemetry_interval_ms: int = 5000):
@@ -74,7 +75,7 @@ class HomeHubClient:
             telemetry_interval_ms: How often this device sends telemetry
         """
         payload = {
-            "name": f"{self.location.title()} {self.device_id}",
+            "name": f"{self.location} {self.device_id}",
             "platform": self.platform,
             "firmware": self._firmware_version,
             "capabilities": self.capabilities,
@@ -165,11 +166,11 @@ class HomeHubClient:
             if data.get("type") == "command" and self._command_handler:
                 payload = data.get("payload", {})
                 self._command_handler(
-                    correlation_id=data.get("correlationId"),
-                    target=payload.get("target"),
-                    action=payload.get("action"),
-                    value=payload.get("value"),
-                    ttl=payload.get("ttl")
+                    data.get("correlationId"),
+                    payload.get("target"),
+                    payload.get("action"),
+                    payload.get("value"),
+                    payload.get("ttl")
                 )
         except Exception as e:
             print(f"[HomeHub] Command parse error: {e}")

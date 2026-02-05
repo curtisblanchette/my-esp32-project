@@ -1,0 +1,22 @@
+{
+  "devices": {
+    "esp32-1": {
+      "location": "living-room",
+      "sensor_pin": 2,
+      "sensor_type": "DHT11",
+      "led_pin": 5
+    },
+    "esp32-2": {
+      "location": "bedroom",
+      "sensor_pin": 4,
+      "sensor_type": "DHT22",
+      "led_pin": 2
+    }
+  },
+  "defaults": {
+    "mqtt_host": "192.168.1.100",
+    "mqtt_port": 1883,
+    "wifi_ssid": "Your_WiFi_SSID",
+    "wifi_password": "Your_WiFi_Password"
+  }
+}

@@ -22,6 +22,7 @@ export interface MetricChartProps {
   yMin: number;
   yMax: number;
   yTickFormat: (value: number) => string;
+  yAxisPosition?: "left" | "right";
 }
 
 export function MetricChart(props: MetricChartProps): React.ReactElement {
@@ -92,6 +93,7 @@ export function MetricChart(props: MetricChartProps): React.ReactElement {
             },
             y: {
               type: "linear",
+              position: props.yAxisPosition ?? "left",
               min: props.yMin,
               max: props.yMax,
               grid: { color: "rgba(127, 127, 127, 0.18)" },

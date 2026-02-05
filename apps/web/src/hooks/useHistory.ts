@@ -46,10 +46,11 @@ function generateHistorySub(points: HistoryPoint[]): string {
 
 interface UseHistoryOptions {
   initialPreset?: DateRangePreset;
+  deviceId?: string;
 }
 
 export function useHistory(options: UseHistoryOptions = {}) {
-  const { initialPreset = DateRangePreset.ONE_HOUR } = options;
+  const { initialPreset = DateRangePreset.ONE_HOUR, deviceId } = options;
 
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [historySub, setHistorySub] = useState<string>("--");
@@ -74,11 +75,13 @@ export function useHistory(options: UseHistoryOptions = {}) {
           untilMs,
           limit: 800,
           bucketMs: 60_000,
+          deviceId,
           signal: controller.signal,
         });
         setHistory(points);
         setHistorySub(generateHistorySub(points));
-      } catch {
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return;
         setHistorySub("Error loading history");
       }
     }
@@ -88,7 +91,7 @@ export function useHistory(options: UseHistoryOptions = {}) {
     return () => {
       controller.abort();
     };
-  }, [dateRangePreset, customStartMs, customEndMs]);
+  }, [dateRangePreset, customStartMs, customEndMs, deviceId]);
 
   // Append real-time updates
   const appendReading = useCallback(

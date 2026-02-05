@@ -1,13 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import type { LatestReading, RelayStatus } from "../api";
+import type { LatestReading, RelayStatus, Device, DeviceEvent, Command } from "../api";
 
 type WebSocketMessage =
   | { type: "latest"; data: LatestReading }
-  | { type: "relays"; data: RelayStatus[] };
+  | { type: "relays"; data: RelayStatus[] }
+  | { type: "devices"; data: Device[] }
+  | { type: "events"; data: DeviceEvent[] }
+  | { type: "event"; data: DeviceEvent }
+  | { type: "commands"; data: Command[] }
+  | { type: "command"; data: Command };
 
 interface UseWebSocketOptions {
   onLatestReading?: (reading: LatestReading) => void;
   onRelayUpdate?: (relays: RelayStatus[]) => void;
+  onDevicesUpdate?: (devices: Device[]) => void;
+  onEventsUpdate?: (events: DeviceEvent[]) => void;
+  onEventReceived?: (event: DeviceEvent) => void;
+  onCommandsUpdate?: (commands: Command[]) => void;
+  onCommandReceived?: (command: Command) => void;
   onError?: (error: Event) => void;
   reconnectInterval?: number;
 }
@@ -16,6 +26,11 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
   const {
     onLatestReading,
     onRelayUpdate,
+    onDevicesUpdate,
+    onEventsUpdate,
+    onEventReceived,
+    onCommandsUpdate,
+    onCommandReceived,
     onError,
     reconnectInterval = 3000,
   } = options;
@@ -67,15 +82,29 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
             onLatestReading(message.data);
           } else if (message.type === "relays" && onRelayUpdate) {
             onRelayUpdate(message.data);
+          } else if (message.type === "devices" && onDevicesUpdate) {
+            onDevicesUpdate(message.data);
+          } else if (message.type === "events" && onEventsUpdate) {
+            onEventsUpdate(message.data);
+          } else if (message.type === "event" && onEventReceived) {
+            onEventReceived(message.data);
+          } else if (message.type === "commands" && onCommandsUpdate) {
+            onCommandsUpdate(message.data);
+          } else if (message.type === "command" && onCommandReceived) {
+            onCommandReceived(message.data);
           }
         } catch (error) {
           console.error("Error parsing WebSocket message:", error);
         }
       };
 
-      ws.onerror = (error) => {
-        console.error("WebSocket error:", error);
-        onError?.(error);
+      ws.onerror = () => {
+        // Only report errors if we're actively trying to connect
+        // (not during cleanup from Strict Mode or intentional disconnect)
+        if (shouldConnectRef.current) {
+          console.error("WebSocket connection failed");
+          onError?.(new Event("error"));
+        }
       };
 
       ws.onclose = () => {

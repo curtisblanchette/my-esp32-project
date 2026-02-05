@@ -62,7 +62,7 @@ export function MetricCard(props: MetricCardProps): React.ReactElement {
       };
 
   return (
-    <div className="glass-card rounded-2xl p-4 flex-1 min-w-[min(420px,100%)] [container-type:inline-size]">
+    <div className="glass-card rounded-2xl p-4 flex-1 min-w-0 [container-type:inline-size] overflow-hidden">
       <div className="flex items-baseline justify-between gap-3 mb-3">
         <div className="opacity-80 text-xs tracking-wider">{isTemp ? "Temperature" : "Relative Humidity"}</div>
         <div className="opacity-75 text-xs">{props.subtitle}</div>

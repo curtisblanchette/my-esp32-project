@@ -13,6 +13,7 @@ interface SensorCardProps {
   humiditySubtitle: string;
   mix?: number;
   latestReading?: LatestReading | null;
+  deviceId?: string;
 }
 
 export function SensorCard(props: SensorCardProps): React.ReactElement {
@@ -27,7 +28,7 @@ export function SensorCard(props: SensorCardProps): React.ReactElement {
     setCustomEndMs,
     timeRangeBounds,
     appendReading,
-  } = useHistory();
+  } = useHistory({ deviceId: props.deviceId });
 
   // Append real-time updates
   useEffect(() => {

@@ -216,3 +216,6 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
 ## Preferences
 - prefer `docker compose ...` over `docker-compose ...`
 - Use the latest installation instructions for libraries and packages. Ensure compatibility with system dependencies. Always prefer latest versions.
+
+## Post-Implementation Workflow
+After completing a plan or significant implementation work, run `/docs` to update README.md and CLAUDE.md. This ensures documentation stays in sync with code changes.

@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { insertCommand } from "../lib/sqlite.js";
 import { getLatest } from "../state/latestReading.js";
 import { publishCommand } from "../services/mqttTelemetry.js";
+import { broadcastCommand } from "../services/websocket.js";
 import { interpretMessage, interpretMessageStream, checkOllamaHealth } from "../services/ollama.js";
 import { analyzeSensorData, formatAnalysisReply, fetchHistory, formatHistoryReply } from "./utils/analysis.js";
 
@@ -46,8 +47,8 @@ export function createChatRouter(): Router {
           return;
         }
 
-        // Store command in database
-        insertCommand({
+        // Store command in database and broadcast to WebSocket clients
+        const command = insertCommand({
           id: correlationId,
           ts: Date.now(),
           deviceId: targetDeviceId,
@@ -57,6 +58,7 @@ export function createChatRouter(): Router {
           source: "chat",
           reason: `Chat command: "${message}"`,
         });
+        broadcastCommand(command);
 
         res.json({
           ok: true,
@@ -204,7 +206,7 @@ export function createChatRouter(): Router {
             });
 
             if (correlationId) {
-              insertCommand({
+              const command = insertCommand({
                 id: correlationId,
                 ts: Date.now(),
                 deviceId: targetDeviceId,
@@ -214,6 +216,7 @@ export function createChatRouter(): Router {
                 source: "chat",
                 reason: `Chat command: "${message}"`,
               });
+              broadcastCommand(command);
             }
 
             res.write(

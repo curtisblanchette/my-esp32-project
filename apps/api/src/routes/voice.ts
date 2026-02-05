@@ -1,9 +1,10 @@
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type Response, type RequestHandler } from 'express';
 import multer from "multer";
 import { interpretMessage } from "../services/ollama.js";
 import { insertCommand } from "../lib/sqlite.js";
 import { getLatest } from "../state/latestReading.js";
 import { publishCommand } from "../services/mqttTelemetry.js";
+import { broadcastCommand } from "../services/websocket.js";
 
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || "http://ai:8000";
 
@@ -27,7 +28,7 @@ export function createVoiceRouter(): Router {
       }
 
       const formData = new FormData();
-      formData.append("audio", new Blob([req.file.buffer]), req.file.originalname || "audio.wav");
+      formData.append("audio", new Blob([new Uint8Array(req.file.buffer)]), req.file.originalname || "audio.wav");
 
       const response = await fetch(`${AI_SERVICE_URL}/voice/transcribe`, {
         method: "POST",
@@ -97,7 +98,7 @@ export function createVoiceRouter(): Router {
 
       // Step 1: Transcribe using AI service
       const formData = new FormData();
-      formData.append("audio", new Blob([req.file.buffer]), req.file.originalname || "audio.wav");
+      formData.append("audio", new Blob([new Uint8Array(req.file.buffer)]), req.file.originalname || "audio.wav");
 
       const transcribeResponse = await fetch(`${AI_SERVICE_URL}/voice/transcribe`, {
         method: "POST",
@@ -140,7 +141,7 @@ export function createVoiceRouter(): Router {
         });
 
         if (correlationId) {
-          insertCommand({
+          const command = insertCommand({
             id: correlationId,
             ts: Date.now(),
             deviceId,
@@ -150,6 +151,7 @@ export function createVoiceRouter(): Router {
             source: "voice",
             reason: `Voice command: "${transcription.text}"`,
           });
+          broadcastCommand(command);
         }
 
         res.json({
@@ -212,7 +214,7 @@ export function createVoiceRouter(): Router {
 
       // Step 1: Transcribe using AI service
       const formData = new FormData();
-      formData.append("audio", new Blob([req.file.buffer]), req.file.originalname || "audio.wav");
+      formData.append("audio", new Blob([new Uint8Array(req.file.buffer)]), req.file.originalname || "audio.wav");
 
       const transcribeResponse = await fetch(`${AI_SERVICE_URL}/voice/transcribe`, {
         method: "POST",
@@ -250,7 +252,7 @@ export function createVoiceRouter(): Router {
           });
 
           if (correlationId) {
-            insertCommand({
+            const command = insertCommand({
               id: correlationId,
               ts: Date.now(),
               deviceId,
@@ -260,6 +262,7 @@ export function createVoiceRouter(): Router {
               source: "voice",
               reason: `Voice command: "${transcription.text}"`,
             });
+            broadcastCommand(command);
           }
         }
 

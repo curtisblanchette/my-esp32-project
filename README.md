@@ -645,6 +645,8 @@ The AI service supports voice interaction through a complete STT → LLM → TTS
 
 **Supported Audio Formats:** WAV, WebM, OGG, MP4 (via ffmpeg conversion)
 
+**TTS Text Normalization:** The TTS pipeline automatically converts numbers, times, currency, percentages, ordinals, and units to spoken English. Emojis, markdown, and symbols are stripped. Long text is split into chunks to stay within Kokoro's 510 phoneme limit.
+
 ## Development
 
 ### Local Development (without Docker)

@@ -114,7 +114,8 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
 - `apps/api/src/server.ts` - Bootstrap HTTP, WebSocket, MQTT, aggregation
 - `apps/api/src/services/mqttTelemetry.ts` - MQTT → Redis + WebSocket broadcast
 - `apps/api/src/services/websocket.ts` - WebSocket server + broadcast functions
-- `apps/api/src/services/ollama.ts` - Ollama LLM client for NLP
+- `apps/api/src/services/ollama.ts` - Ollama LLM client for NLP (`OllamaIntent` type)
+- `apps/api/src/services/systemPrompt.ts` - LLM system prompt with intent schemas
 - `apps/api/src/services/commandExpirationJob.ts` - Command TTL management
 - `apps/api/src/lib/redis.ts` - Redis client with 48hr TTL storage
 - `apps/api/src/lib/sqlite.ts` - SQLite queries + relay config
@@ -212,6 +213,24 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
 - Two-column layout doesn't collapse on narrow viewports
 - `min-w-0` on flex children prevents overflow issues
 - `overflow-hidden` on cards can clip content if not careful
+
+## Chat & Voice Response Format
+
+**`<detail>` Tag Pattern:**
+Chat responses for `analyze` and `history` intents use `<detail>` tags to separate display-only content from TTS-spoken content:
+```
+intent.reply              ← spoken by TTS
+<detail>
+📊 detailed data...       ← display only (stripped by TTS)
+</detail>
+intent.summary            ← spoken by TTS
+```
+
+- `stripDetail()` in ChatInput.tsx removes `<detail>...</detail>` blocks before passing text to TTS
+- `formatMessage()` strips the tag markers for display rendering
+- The LLM produces `summary` (1-3 sentence spoken closing) for `history` and `analyze` intents
+- TTS text is cleaned via `_clean_text_for_tts()` in voice_service.py (numbers, times, currency, percentages, ordinals, emojis, markdown → spoken English)
+- Long TTS text is chunked via `_split_into_chunks()` to stay within Kokoro's 510 phoneme limit
 
 ## Claude Skills
 

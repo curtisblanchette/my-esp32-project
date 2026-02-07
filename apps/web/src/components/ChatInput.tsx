@@ -19,6 +19,10 @@ type ChatMessage = {
   audioUrl?: string;
 };
 
+function stripDetail(text: string): string {
+  return text.replace(/<detail>[\s\S]*?<\/detail>/g, "").trim();
+}
+
 export function ChatInput(): React.ReactElement {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -132,9 +136,9 @@ export function ChatInput(): React.ReactElement {
       };
       setMessages((prev) => [...prev, assistantMessage]);
 
-      // Speak the response
+      // Speak the response (strip detail sections for TTS)
       if (result.response) {
-        speakResponse(result.response, assistantMessage.id);
+        speakResponse(stripDetail(result.response), assistantMessage.id);
       }
     } catch (err) {
       console.error("Voice command failed:", err);
@@ -249,9 +253,9 @@ export function ChatInput(): React.ReactElement {
           };
           setMessages((prev) => [...prev, assistantMessage]);
 
-          // Speak the response if auto-play is enabled
+          // Speak the response if auto-play is enabled (strip detail sections for TTS)
           if (autoPlayAudio && finalEvent.reply && voiceHealth?.tts_available) {
-            speakResponse(finalEvent.reply, assistantMessage.id);
+            speakResponse(stripDetail(finalEvent.reply), assistantMessage.id);
           }
         } else if (streamingContentRef.current) {
           // Stream ended without a done event - show what we received
@@ -306,7 +310,8 @@ export function ChatInput(): React.ReactElement {
 
   // Parse markdown-style formatting in messages
   const formatMessage = (content: string): React.ReactNode => {
-    const lines = content.split("\n");
+    const cleaned = content.replace(/<\/?detail>/g, "");
+    const lines = cleaned.split("\n");
     return lines.map((line, i) => {
       // Parse **bold** markers
       const parts: React.ReactNode[] = [];

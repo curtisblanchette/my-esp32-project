@@ -4,8 +4,8 @@ import { buildSystemPrompt } from "./systemPrompt.js";
 export type OllamaIntent =
   | { intent: "command"; target: string; action: string; value: unknown; reply: string }
   | { intent: "query"; sensor: string; reply: string }
-  | { intent: "history"; timeframe: string; category?: "commands" | "events" | "all"; reply: string }
-  | { intent: "analyze"; timeframe: string; metric?: "temperature" | "humidity" | "all"; reply: string }
+  | { intent: "history"; timeframe: string; category?: "commands" | "events" | "all"; reply: string; summary?: string }
+  | { intent: "analyze"; timeframe: string; metric?: "temperature" | "humidity" | "all"; reply: string; summary?: string }
   | { intent: "none"; reply: string };
 
 export async function interpretMessage(message: string): Promise<OllamaIntent> {

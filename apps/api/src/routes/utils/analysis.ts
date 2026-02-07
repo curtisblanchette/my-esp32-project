@@ -136,7 +136,7 @@ export function formatAnalysisReply(
     return parts.join("");
   }
 
-  parts.push(`\n\n📊 Analyzed ${analysis.dataPoints} readings`);
+  parts.push(`\n\n<detail>\n📊 Analyzed ${analysis.dataPoints} readings`);
 
   const formatMetricAnalysis = (data: SensorAnalysis) => {
     const unit = data.metric === "temperature" ? "°C" : "%";
@@ -161,7 +161,7 @@ export function formatAnalysisReply(
       // Show most recent anomalies
       const recentAnomalies = data.anomalies.slice(-3);
       for (const a of recentAnomalies) {
-        const time = new Date(a.ts).toLocaleTimeString();
+        const time = new Date(a.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         parts.push(`  → ${time}: ${a.value.toFixed(1)}${unit} (${a.type})`);
       }
     } else {
@@ -171,6 +171,12 @@ export function formatAnalysisReply(
 
   if (analysis.temperature) formatMetricAnalysis(analysis.temperature);
   if (analysis.humidity) formatMetricAnalysis(analysis.humidity);
+
+  parts.push("</detail>");
+
+  if (intent.summary) {
+    parts.push(`\n${intent.summary}`);
+  }
 
   return parts.join("\n");
 }
@@ -202,10 +208,12 @@ export function formatHistoryReply(
 ): string {
   const parts: string[] = [intent.reply];
 
+  parts.push("\n\n<detail>");
+
   if (history.commands && history.commands.length > 0) {
     parts.push(`\n\n**Commands (${history.commands.length}):**`);
     for (const cmd of history.commands.slice(0, 10)) {
-      const time = new Date(cmd.ts).toLocaleTimeString();
+      const time = new Date(cmd.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       const status = cmd.status === "acked" ? "✓" : cmd.status === "failed" ? "✗" : "⏳";
       parts.push(`${status} ${time}: ${cmd.target} → ${cmd.value} (${cmd.source})`);
     }
@@ -219,7 +227,7 @@ export function formatHistoryReply(
   if (history.events && history.events.length > 0) {
     parts.push(`\n\n**Events (${history.events.length}):**`);
     for (const evt of history.events.slice(0, 10)) {
-      const time = new Date(evt.ts).toLocaleTimeString();
+      const time = new Date(evt.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       parts.push(`• ${time}: ${evt.eventType} (${evt.deviceId})`);
     }
     if (history.events.length > 10) {
@@ -227,6 +235,12 @@ export function formatHistoryReply(
     }
   } else if (intent.category === "events" || intent.category === "all") {
     parts.push("\n\nNo events found in this timeframe.");
+  }
+
+  parts.push("</detail>");
+
+  if (intent.summary) {
+    parts.push(`\n${intent.summary}`);
   }
 
   return parts.join("\n");

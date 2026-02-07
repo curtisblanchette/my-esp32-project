@@ -1,10 +1,7 @@
-import { Router, type Request, type Response, type RequestHandler } from 'express';
+import { Router, type Request, type Response } from 'express';
 import multer from "multer";
 import { interpretMessage } from "../services/ollama.js";
-import { insertCommand } from "../lib/sqlite.js";
-import { getLatest } from "../state/latestReading.js";
-import { publishCommand } from "../services/mqttTelemetry.js";
-import { broadcastCommand } from "../services/websocket.js";
+import { executeIntent } from "./utils/executeIntent.js";
 
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || "http://ai:8000";
 
@@ -125,167 +122,25 @@ export function createVoiceRouter(): Router {
       // Step 2: Process with API's orchestrator (same as chat)
       const intent = await interpretMessage(transcription.text);
 
-      // Step 3: Handle different intents
-      if (intent.intent === "command") {
-        const deviceId = (req.body.deviceId as string) ?? "esp32-1";
-        const location = (req.body.location as string) ?? "room1";
+      // Step 3: Execute the intent (shared with chat routes)
+      const { deviceId, location } = req.body;
+      const result = await executeIntent(intent, {
+        deviceId,
+        location,
+        source: "voice",
+        message: transcription.text,
+      });
 
-        const correlationId = publishCommand({
-          deviceId,
-          location,
-          target: intent.target,
-          action: intent.action,
-          value: intent.value,
-          source: "voice",
-          reason: `Voice command: "${transcription.text}"`,
-        });
-
-        if (correlationId) {
-          const command = insertCommand({
-            id: correlationId,
-            ts: Date.now(),
-            deviceId,
-            target: intent.target,
-            action: intent.action,
-            value: intent.value,
-            source: "voice",
-            reason: `Voice command: "${transcription.text}"`,
-          });
-          broadcastCommand(command);
-        }
-
-        res.json({
-          ok: true,
-          transcription: transcription.text,
-          response: intent.reply,
-          action: "command",
-          target: intent.target,
-          value: intent.value,
-        });
-        return;
-      }
-
-      if (intent.intent === "query") {
-        const latest = getLatest();
-        let sensorValue: number | null = null;
-
-        if (latest) {
-          if (intent.sensor === "temp1") {
-            sensorValue = latest.temp;
-          } else if (intent.sensor === "hum1") {
-            sensorValue = latest.humidity;
-          }
-        }
-
-        res.json({
-          ok: true,
-          transcription: transcription.text,
-          response: intent.reply,
-          action: "query",
-          target: intent.sensor,
-          value: sensorValue,
-        });
-        return;
-      }
-
-      // For history/analyze/none intents
       res.json({
-        ok: true,
+        ok: result.ok,
         transcription: transcription.text,
-        response: intent.reply,
+        response: result.reply,
+        action: result.action?.type,
+        target: result.action?.target as string | undefined,
+        value: result.action?.value,
       });
     } catch (err) {
       console.error("Error processing voice command:", err);
-      res.status(503).json({
-        ok: false,
-        error: "Voice service unavailable",
-      });
-    }
-  });
-
-  // Process voice command with audio response
-  // Uses AI service for transcription + TTS, API's orchestrator for intent processing
-  router.post("/command/audio", upload.single("audio"), async (req: Request, res: Response) => {
-    try {
-      if (!req.file) {
-        res.status(400).json({ ok: false, error: "No audio file provided" });
-        return;
-      }
-
-      // Step 1: Transcribe using AI service
-      const formData = new FormData();
-      formData.append("audio", new Blob([new Uint8Array(req.file.buffer)]), req.file.originalname || "audio.wav");
-
-      const transcribeResponse = await fetch(`${AI_SERVICE_URL}/voice/transcribe`, {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!transcribeResponse.ok) {
-        const error = await transcribeResponse.text();
-        res.status(transcribeResponse.status).json({ ok: false, error });
-        return;
-      }
-
-      const transcription = (await transcribeResponse.json()) as { text: string; success: boolean };
-      let responseText: string;
-
-      if (!transcription.text) {
-        responseText = "I didn't catch that. Could you please repeat?";
-      } else {
-        // Step 2: Process with API's orchestrator
-        const intent = await interpretMessage(transcription.text);
-
-        // Step 3: Handle different intents
-        if (intent.intent === "command") {
-          const deviceId = (req.body.deviceId as string) ?? "esp32-1";
-          const location = (req.body.location as string) ?? "room1";
-
-          const correlationId = publishCommand({
-            deviceId,
-            location,
-            target: intent.target,
-            action: intent.action,
-            value: intent.value,
-            source: "voice",
-            reason: `Voice command: "${transcription.text}"`,
-          });
-
-          if (correlationId) {
-            const command = insertCommand({
-              id: correlationId,
-              ts: Date.now(),
-              deviceId,
-              target: intent.target,
-              action: intent.action,
-              value: intent.value,
-              source: "voice",
-              reason: `Voice command: "${transcription.text}"`,
-            });
-            broadcastCommand(command);
-          }
-        }
-
-        responseText = intent.reply;
-      }
-
-      // Step 4: Synthesize response audio
-      const synthesizeResponse = await fetch(`${AI_SERVICE_URL}/voice/synthesize`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: responseText }),
-      });
-
-      if (!synthesizeResponse.ok) {
-        res.status(503).json({ ok: false, error: "TTS service unavailable" });
-        return;
-      }
-
-      res.setHeader("Content-Type", "audio/wav");
-      const arrayBuffer = await synthesizeResponse.arrayBuffer();
-      res.send(Buffer.from(arrayBuffer));
-    } catch (err) {
-      console.error("Error processing voice command with audio:", err);
       res.status(503).json({
         ok: false,
         error: "Voice service unavailable",

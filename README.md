@@ -189,40 +189,45 @@ flowchart TB
     AI -->|http://| Ollama
 ```
 
-### Voice Processing Pipeline
+### Voice & Chat Processing Pipeline
+
+Both text chat and voice commands funnel through a shared `executeIntent()` function, ensuring all intents (command, query, history, analyze) are handled identically regardless of input method.
 
 ```mermaid
-flowchart LR
-    subgraph Input
-        Mic["🎤 Microphone"]
-    end
-
-    subgraph WebApp["React Dashboard"]
-        Record["MediaRecorder<br/>(WebM)"]
+flowchart TB
+    subgraph Frontend["Web Frontend"]
+        TextChat["Text Chat<br/>(handleSubmit)"]
+        VoiceBtn["Voice Button<br/>(handleVoiceInput)"]
+        TTS["speakResponse()<br/>stripDetail → synthesize"]
     end
 
     subgraph NodeAPI["Node.js API :3000"]
-        Proxy1["/api/voice/command"]
+        ChatStream["POST /chat/stream<br/>interpretMessageStream()"]
+        VoiceCmd["POST /voice/command<br/>STT → interpretMessage()"]
+        SynthProxy["POST /voice/synthesize<br/>(proxy)"]
+
+        Executor["executeIntent(intent, ctx)<br/>───────────────<br/>command → MQTT + SQLite + WS<br/>query → latest reading<br/>history → fetchHistory + format<br/>analyze → analyzeSensor + format<br/>none → passthrough"]
     end
 
-    subgraph PythonAI["AI Service :8000"]
-        STT["Vosk STT"]
-        LLM["Ollama LLM"]
-        TTS["Kokoro TTS"]
+    subgraph PythonAI["Python AI Service :8000"]
+        STT["/voice/transcribe<br/>(Vosk STT)"]
+        TTSService["/voice/synthesize<br/>(Kokoro TTS)"]
     end
 
-    subgraph Output
-        Speaker["🔊 Speaker"]
-        MQTT["MQTT Command"]
+    subgraph Ollama["Ollama :11434"]
+        LLM["LLM"]
     end
 
-    Mic --> Record
-    Record -->|audio blob| Proxy1
-    Proxy1 -->|forward| STT
-    STT -->|text| LLM
-    LLM -->|response + action| TTS
-    LLM -->|command| MQTT
-    TTS -->|audio| Speaker
+    TextChat -->|SSE stream| ChatStream
+    VoiceBtn -->|audio blob| VoiceCmd
+    ChatStream --> LLM
+    VoiceCmd -->|audio| STT
+    STT -->|text| VoiceCmd
+    VoiceCmd --> LLM
+    ChatStream --> Executor
+    VoiceCmd --> Executor
+    Executor -->|MQTT + SQLite + WS| Executor
+    TTS --> SynthProxy --> TTSService
 ```
 
 ### Message Envelope Format (v1)
@@ -640,8 +645,7 @@ The AI service supports voice interaction through a complete STT → LLM → TTS
 |----------|---------|
 | `POST /voice/transcribe` | Audio → Text (Vosk) |
 | `POST /voice/synthesize` | Text → Audio (Kokoro) |
-| `POST /voice/command` | Full pipeline: Audio → Text → LLM → Response |
-| `POST /voice/command/audio` | Full pipeline with audio response |
+| `POST /voice/command` | Full pipeline: Audio → Text → LLM → executeIntent → Response |
 
 **Supported Audio Formats:** WAV, WebM, OGG, MP4 (via ffmpeg conversion)
 

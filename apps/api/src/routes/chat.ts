@@ -1,10 +1,6 @@
 import { Router, type Request, type Response } from "express";
-import { insertCommand } from "../lib/sqlite.js";
-import { getLatest } from "../state/latestReading.js";
-import { publishCommand } from "../services/mqttTelemetry.js";
-import { broadcastCommand } from "../services/websocket.js";
 import { interpretMessage, interpretMessageStream, checkOllamaHealth } from "../services/ollama.js";
-import { analyzeSensorData, formatAnalysisReply, fetchHistory, formatHistoryReply } from "./utils/analysis.js";
+import { executeIntent } from "./utils/executeIntent.js";
 
 export function createChatRouter(): Router {
   const router = Router();
@@ -22,129 +18,14 @@ export function createChatRouter(): Router {
       // Interpret the message using Ollama
       const intent = await interpretMessage(message);
 
-      // Handle different intents
-      if (intent.intent === "command") {
-        const targetDeviceId = deviceId ?? "esp32-1";
-        const targetLocation = location ?? "room1";
+      const result = await executeIntent(intent, { deviceId, location, source: "chat", message });
 
-        // Execute the command
-        const correlationId = publishCommand({
-          deviceId: targetDeviceId,
-          location: targetLocation,
-          target: intent.target,
-          action: intent.action,
-          value: intent.value,
-          source: "chat",
-          reason: `Chat command: "${message}"`,
-        });
-
-        if (!correlationId) {
-          res.status(503).json({
-            ok: false,
-            reply: "I understood your request, but the device is currently unreachable.",
-            error: "MQTT client not connected",
-          });
-          return;
-        }
-
-        // Store command in database and broadcast to WebSocket clients
-        const command = insertCommand({
-          id: correlationId,
-          ts: Date.now(),
-          deviceId: targetDeviceId,
-          target: intent.target,
-          action: intent.action,
-          value: intent.value,
-          source: "chat",
-          reason: `Chat command: "${message}"`,
-        });
-        broadcastCommand(command);
-
-        res.json({
-          ok: true,
-          reply: intent.reply,
-          action: {
-            type: "command",
-            correlationId,
-            target: intent.target,
-            value: intent.value,
-          },
-        });
+      if (!result.ok && intent.intent === "command") {
+        res.status(503).json({ ...result, error: "MQTT client not connected" });
         return;
       }
 
-      if (intent.intent === "query") {
-        const latest = getLatest();
-        let sensorValue: number | null = null;
-
-        if (latest) {
-          if (intent.sensor === "temp1") {
-            sensorValue = latest.temp;
-          } else if (intent.sensor === "hum1") {
-            sensorValue = latest.humidity;
-          }
-        }
-
-        res.json({
-          ok: true,
-          reply: intent.reply,
-          action: {
-            type: "query",
-            sensor: intent.sensor,
-            value: sensorValue,
-          },
-        });
-        return;
-      }
-
-      if (intent.intent === "history") {
-        const history = fetchHistory(intent);
-        const formattedReply = formatHistoryReply(intent, history);
-
-        res.json({
-          ok: true,
-          reply: formattedReply,
-          action: {
-            type: "history",
-            timeframe: intent.timeframe,
-            category: intent.category ?? "all",
-            commands: history.commands,
-            events: history.events,
-          },
-        });
-        return;
-      }
-
-      if (intent.intent === "analyze") {
-        try {
-          const analysis = await analyzeSensorData(intent);
-          const formattedReply = formatAnalysisReply(intent, analysis);
-
-          res.json({
-            ok: true,
-            reply: formattedReply,
-            action: {
-              type: "analyze",
-              timeframe: intent.timeframe,
-              metric: intent.metric ?? "all",
-              analysis,
-            },
-          });
-        } catch (analysisError) {
-          console.error("Error analyzing sensor data:", analysisError);
-          res.json({
-            ok: false,
-            reply: "I encountered an error while analyzing the sensor data. Please try again.",
-          });
-        }
-        return;
-      }
-
-      // intent === "none"
-      res.json({
-        ok: true,
-        reply: intent.reply,
-      });
+      res.json(result);
     } catch (err) {
       console.error("Error processing chat message", err);
       const errorMessage = err instanceof Error ? err.message : "Unknown error";
@@ -188,129 +69,8 @@ export function createChatRouter(): Router {
         if (chunk.type === "token") {
           res.write(`data: ${JSON.stringify({ type: "token", token: chunk.token })}\n\n`);
         } else if (chunk.type === "done") {
-          const intent = chunk.intent;
-
-          // Handle different intents
-          if (intent.intent === "command") {
-            const targetDeviceId = deviceId ?? "esp32-1";
-            const targetLocation = location ?? "room1";
-
-            const correlationId = publishCommand({
-              deviceId: targetDeviceId,
-              location: targetLocation,
-              target: intent.target,
-              action: intent.action,
-              value: intent.value,
-              source: "chat",
-              reason: `Chat command: "${message}"`,
-            });
-
-            if (correlationId) {
-              const command = insertCommand({
-                id: correlationId,
-                ts: Date.now(),
-                deviceId: targetDeviceId,
-                target: intent.target,
-                action: intent.action,
-                value: intent.value,
-                source: "chat",
-                reason: `Chat command: "${message}"`,
-              });
-              broadcastCommand(command);
-            }
-
-            res.write(
-              `data: ${JSON.stringify({
-                type: "done",
-                ok: true,
-                reply: intent.reply,
-                action: {
-                  type: "command",
-                  correlationId,
-                  target: intent.target,
-                  value: intent.value,
-                },
-              })}\n\n`
-            );
-          } else if (intent.intent === "query") {
-            const latest = getLatest();
-            let sensorValue: number | null = null;
-
-            if (latest) {
-              if (intent.sensor === "temp1") {
-                sensorValue = latest.temp;
-              } else if (intent.sensor === "hum1") {
-                sensorValue = latest.humidity;
-              }
-            }
-
-            res.write(
-              `data: ${JSON.stringify({
-                type: "done",
-                ok: true,
-                reply: intent.reply,
-                action: {
-                  type: "query",
-                  sensor: intent.sensor,
-                  value: sensorValue,
-                },
-              })}\n\n`
-            );
-          } else if (intent.intent === "history") {
-            const history = fetchHistory(intent);
-            const formattedReply = formatHistoryReply(intent, history);
-
-            res.write(
-              `data: ${JSON.stringify({
-                type: "done",
-                ok: true,
-                reply: formattedReply,
-                action: {
-                  type: "history",
-                  timeframe: intent.timeframe,
-                  category: intent.category ?? "all",
-                  commands: history.commands,
-                  events: history.events,
-                },
-              })}\n\n`
-            );
-          } else if (intent.intent === "analyze") {
-            try {
-              const analysis = await analyzeSensorData(intent);
-              const formattedReply = formatAnalysisReply(intent, analysis);
-
-              res.write(
-                `data: ${JSON.stringify({
-                  type: "done",
-                  ok: true,
-                  reply: formattedReply,
-                  action: {
-                    type: "analyze",
-                    timeframe: intent.timeframe,
-                    metric: intent.metric ?? "all",
-                    analysis,
-                  },
-                })}\n\n`
-              );
-            } catch (analysisError) {
-              console.error("Error analyzing sensor data:", analysisError);
-              res.write(
-                `data: ${JSON.stringify({
-                  type: "done",
-                  ok: false,
-                  reply: "I encountered an error while analyzing the sensor data. Please try again.",
-                })}\n\n`
-              );
-            }
-          } else {
-            res.write(
-              `data: ${JSON.stringify({
-                type: "done",
-                ok: true,
-                reply: intent.reply,
-              })}\n\n`
-            );
-          }
+          const result = await executeIntent(chunk.intent, { deviceId, location, source: "chat", message });
+          res.write(`data: ${JSON.stringify({ type: "done", ...result })}\n\n`);
         }
       }
     } catch (err) {

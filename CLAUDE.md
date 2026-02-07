@@ -47,6 +47,47 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
                    MQTT Commands → ESP32
 ```
 
+**Voice & Chat Architecture:**
+
+Both text chat and voice commands funnel through a shared `executeIntent()` function, ensuring all intents are handled identically.
+
+```mermaid
+flowchart TB
+    subgraph Frontend["Web Frontend"]
+        TextChat["Text Chat<br/>(handleSubmit)"]
+        VoiceBtn["Voice Button<br/>(handleVoiceInput)"]
+        TTS["speakResponse()<br/>stripDetail → synthesize"]
+    end
+
+    subgraph NodeAPI["Node.js API :3000"]
+        ChatStream["POST /chat/stream<br/>interpretMessageStream()"]
+        VoiceCmd["POST /voice/command<br/>STT → interpretMessage()"]
+        SynthProxy["POST /voice/synthesize<br/>(proxy)"]
+
+        Executor["executeIntent(intent, ctx)<br/>───────────────<br/>command → MQTT + SQLite + WS<br/>query → latest reading<br/>history → fetchHistory + format<br/>analyze → analyzeSensor + format<br/>none → passthrough"]
+    end
+
+    subgraph PythonAI["Python AI Service :8000"]
+        STT["/voice/transcribe<br/>(Vosk STT)"]
+        TTSService["/voice/synthesize<br/>(Kokoro TTS)"]
+    end
+
+    subgraph Ollama["Ollama :11434"]
+        LLM["LLM"]
+    end
+
+    TextChat -->|SSE stream| ChatStream
+    VoiceBtn -->|audio blob| VoiceCmd
+    ChatStream --> LLM
+    VoiceCmd -->|audio| STT
+    STT -->|text| VoiceCmd
+    VoiceCmd --> LLM
+    ChatStream --> Executor
+    VoiceCmd --> Executor
+    Executor -->|MQTT + SQLite + WS| Executor
+    TTS --> SynthProxy --> TTSService
+```
+
 **Monorepo Structure:**
 - `apps/api` - Node.js/Express backend with WebSocket + MQTT client
 - `apps/web` - React/Vite dashboard with Chart.js visualizations
@@ -97,8 +138,7 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
 **Voice (Proxy to AI Service)**
 - `POST /api/voice/transcribe` - Audio → Text (Vosk STT)
 - `POST /api/voice/synthesize` - Text → Audio (Kokoro TTS)
-- `POST /api/voice/command` - Full STT → LLM → command pipeline
-- `POST /api/voice/command/audio` - Full pipeline with audio response
+- `POST /api/voice/command` - Full STT → LLM → executeIntent pipeline
 
 **WebSocket**
 - WebSocket at `/ws` broadcasts:
@@ -120,6 +160,7 @@ ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
 - `apps/api/src/lib/redis.ts` - Redis client with 48hr TTL storage
 - `apps/api/src/lib/sqlite.ts` - SQLite queries + relay config
 - `apps/api/src/routes/` - API endpoint handlers (telemetry, relays, devices, commands, events, chat, voice)
+- `apps/api/src/routes/utils/executeIntent.ts` - Shared intent executor for chat + voice routes
 - `apps/api/src/routes/utils/analysis.ts` - Sensor data analysis and formatting
 - `apps/api/src/routes/utils/timeframe.ts` - Time range preset parsing
 

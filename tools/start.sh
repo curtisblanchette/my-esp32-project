@@ -31,7 +31,7 @@ export OLLAMA_MODEL=llama3.2:3b
 export API_URL=http://localhost:3000
 
 cd apps/ai
-../../.venv/bin/uvicorn src.api:app --host 0.0.0.0 --port 8000 &
+../../.venv/bin/uvicorn src.api:app --host 0.0.0.0 --port 8000 --reload &
 AI_PID=$!
 cd ../..
 
@@ -54,6 +54,14 @@ echo "  - Web:     http://localhost:5173"
 echo ""
 echo "To stop: ./tools/stop.sh"
 
-# Keep script running to maintain background processes
-trap "kill $OLLAMA_PID $AI_PID 2>/dev/null" EXIT
+# Keep script running; clean up everything on exit
+cleanup() {
+  echo ""
+  echo "Shutting down services..."
+  kill $AI_PID 2>/dev/null
+  kill $OLLAMA_PID 2>/dev/null
+  docker compose down
+  echo "All services stopped"
+}
+trap cleanup EXIT INT TERM
 wait

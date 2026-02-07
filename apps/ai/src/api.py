@@ -21,6 +21,11 @@ from .config import (
 from .services.voice_service import VoiceService
 from .services.shared import get_shared_services
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 logger = logging.getLogger(__name__)
 
 # Global services (initialized on startup)

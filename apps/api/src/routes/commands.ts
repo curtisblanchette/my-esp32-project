@@ -70,7 +70,7 @@ export function createCommandsRouter(): Router {
 
   router.get("/:id", (req: Request, res: Response) => {
     try {
-      const command = getCommand(req.params.id);
+      const command = getCommand(String(req.params.id));
       if (!command) {
         res.status(404).json({ ok: false, error: "Command not found" });
         return;

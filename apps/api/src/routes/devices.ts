@@ -16,7 +16,7 @@ export function createDevicesRouter(): Router {
 
   router.get("/:id", (req: Request, res: Response) => {
     try {
-      const device = getDevice(req.params.id);
+      const device = getDevice(String(req.params.id));
       if (!device) {
         res.status(404).json({ ok: false, error: "Device not found" });
         return;
@@ -30,12 +30,12 @@ export function createDevicesRouter(): Router {
 
   router.get("/:id/actuators", (req: Request, res: Response) => {
     try {
-      const device = getDevice(req.params.id);
+      const device = getDevice(String(req.params.id));
       if (!device) {
         res.status(404).json({ ok: false, error: "Device not found" });
         return;
       }
-      const actuators = getDeviceActuators(req.params.id);
+      const actuators = getDeviceActuators(String(req.params.id));
       res.json({ ok: true, actuators });
     } catch (err) {
       console.error("Error fetching device actuators", err);

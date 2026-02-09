@@ -2,10 +2,10 @@ import { config } from "../config/index.js";
 import { buildSystemPrompt } from "./systemPrompt.js";
 
 export type OllamaIntent =
-  | { intent: "command"; target: string; action: string; value: unknown; reply: string }
-  | { intent: "query"; sensor: string; reply: string }
-  | { intent: "history"; timeframe: string; category?: "commands" | "events" | "all"; reply: string; summary?: string }
-  | { intent: "analyze"; timeframe: string; metric?: "temperature" | "humidity" | "all"; reply: string; summary?: string }
+  | { intent: "command"; deviceId?: string; target: string; action: string; value: unknown; reply: string }
+  | { intent: "query"; deviceId?: string; sensor: string; reply: string }
+  | { intent: "history"; deviceId?: string; timeframe: string; category?: "commands" | "events" | "all"; reply: string; summary?: string }
+  | { intent: "analyze"; deviceId?: string; timeframe: string; metric?: "temperature" | "humidity" | "all"; reply: string; summary?: string }
   | { intent: "none"; reply: string };
 
 export async function interpretMessage(message: string): Promise<OllamaIntent> {

@@ -1,6 +1,6 @@
 import type { OllamaIntent } from "../../services/ollama.js";
-import { insertCommand } from "../../lib/sqlite.js";
-import { getLatest } from "../../state/latestReading.js";
+import { insertCommand, getDevice } from "../../lib/sqlite.js";
+import { getLatestByDevice } from "../../state/latestReading.js";
 import { publishCommand } from "../../services/mqttTelemetry.js";
 import { broadcastCommand } from "../../services/websocket.js";
 import { analyzeSensorData, formatAnalysisReply, fetchHistory, formatHistoryReply } from "./analysis.js";
@@ -18,13 +18,20 @@ export type IntentResult = {
   action?: { type: string; [key: string]: unknown };
 };
 
+function resolveDevice(intent: OllamaIntent, ctx: IntentContext): { deviceId: string; location: string } {
+  // Prefer the LLM's deviceId, then the context's, then fallback
+  const deviceId = ("deviceId" in intent && intent.deviceId) || ctx.deviceId || "esp32-1";
+  const device = getDevice(deviceId);
+  const location = ctx.location ?? device?.location ?? "room1";
+  return { deviceId, location };
+}
+
 export async function executeIntent(
   intent: OllamaIntent,
   ctx: IntentContext
 ): Promise<IntentResult> {
   if (intent.intent === "command") {
-    const deviceId = ctx.deviceId ?? "esp32-1";
-    const location = ctx.location ?? "room1";
+    const { deviceId, location } = resolveDevice(intent, ctx);
 
     const correlationId = publishCommand({
       deviceId,
@@ -68,7 +75,8 @@ export async function executeIntent(
   }
 
   if (intent.intent === "query") {
-    const latest = getLatest();
+    const { deviceId } = resolveDevice(intent, ctx);
+    const latest = getLatestByDevice(deviceId);
     let sensorValue: number | null = null;
 
     if (latest) {

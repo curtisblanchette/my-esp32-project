@@ -1,5 +1,5 @@
 import { expireCommands } from "../lib/sqlite.js";
-import { broadcastCommandUpdate } from "./websocket.js";
+import { broadcastCommand } from "./websocket.js";
 
 const EXPIRATION_CHECK_INTERVAL_MS = 5000; // Check every 5 seconds
 
@@ -23,8 +23,10 @@ function checkAndExpireCommands(): void {
     if (expiredCommands.length > 0) {
       console.log(`Expired ${expiredCommands.length} command(s):`, expiredCommands.map((c) => c.id).join(", "));
 
-      // Broadcast expired commands to connected clients
-      broadcastCommandUpdate(expiredCommands);
+      // Broadcast each expired command individually (upserts on frontend)
+      for (const cmd of expiredCommands) {
+        broadcastCommand(cmd);
+      }
     }
   } catch (err) {
     console.error("Command expiration job failed:", err);

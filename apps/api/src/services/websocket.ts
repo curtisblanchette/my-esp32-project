@@ -161,21 +161,6 @@ function buildRelayList(): Array<{
   }));
 }
 
-export function broadcastCommandUpdate(commands: Command[]): void {
-  if (commands.length === 0) return;
-
-  const message = JSON.stringify({
-    type: "commands",
-    data: commands,
-  });
-
-  clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(message);
-    }
-  });
-}
-
 export function broadcastCommand(command: Command): void {
   const message = JSON.stringify({ type: "command", data: command });
   clients.forEach((client) => {

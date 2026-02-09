@@ -6,7 +6,7 @@ import { parseTelemetry } from "../lib/telemetry.js";
 import { storeReading } from "../lib/redis.js";
 import { setLatest } from "../state/latestReading.js";
 import { broadcastLatestReading, broadcastDevices, broadcastEvent, broadcastCommand } from "./websocket.js";
-import { updateCommandAck, insertEvent, insertCommand, getCommand, upsertDevice, setDeviceOffline, updateActuatorState, type DeviceCapabilities } from "../lib/sqlite.js";
+import { updateCommandAck, insertEvent, insertCommand, getCommand, hasPendingCommandForTarget, upsertDevice, setDeviceOffline, updateActuatorState, type DeviceCapabilities } from "../lib/sqlite.js";
 
 let mqttClient: MqttClient | null = null;
 
@@ -223,6 +223,12 @@ function handleCommand(envelope: MessageEnvelope & { correlationId?: string; sou
 
   if (!p.target || !p.action) {
     console.log(`[MQTT] Command missing target or action from ${source}`);
+    return;
+  }
+
+  // Skip if there's already a pending command for the same device+target
+  if (hasPendingCommandForTarget(deviceId, p.target)) {
+    console.log(`[MQTT] Skipping command ${correlationId} — pending command already exists for ${deviceId}/${p.target}`);
     return;
   }
 

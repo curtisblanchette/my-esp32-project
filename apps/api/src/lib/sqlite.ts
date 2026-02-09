@@ -509,6 +509,14 @@ export function queryCommands(args: {
   }));
 }
 
+export function hasPendingCommandForTarget(deviceId: string, target: string): boolean {
+  const d = getDb();
+  const stmt = d.prepare(
+    "SELECT 1 FROM commands WHERE device_id = ? AND target = ? AND status = 'pending' LIMIT 1"
+  );
+  return stmt.get(deviceId, target) !== undefined;
+}
+
 export function getPendingCommands(): Command[] {
   const d = getDb();
   const stmt = d.prepare(

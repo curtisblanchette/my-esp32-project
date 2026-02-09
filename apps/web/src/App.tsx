@@ -123,7 +123,15 @@ export function App(): React.ReactElement {
       setCommands(commandList);
     },
     onCommandReceived: (command) => {
-      setCommands((prev) => [command, ...prev].slice(0, 20));
+      setCommands((prev) => {
+        const idx = prev.findIndex((c) => c.id === command.id);
+        if (idx >= 0) {
+          const updated = [...prev];
+          updated[idx] = command;
+          return updated;
+        }
+        return [command, ...prev].slice(0, 20);
+      });
     },
     // Connection status is shown in UI, no need to add errors to feed
   });

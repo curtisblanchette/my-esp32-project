@@ -10,7 +10,7 @@ interface UseOptimisticToggleOptions {
 }
 
 export function useOptimisticToggle(options: UseOptimisticToggleOptions) {
-  const { initialState, onToggle, onSuccess, onError, ackTimeout = 10000 } = options;
+  const { initialState, onToggle, onSuccess, onError, ackTimeout = 15000 } = options;
   const [state, setState] = useState(initialState);
   const [isToggling, setIsToggling] = useState(false);
   const pendingStateRef = useRef<boolean | null>(null);

@@ -129,6 +129,7 @@ boot_time = time.ticks_ms()
 
 # Main loop
 backoff = 1
+next_telemetry = time.ticks_ms()
 
 while True:
     try:
@@ -136,34 +137,39 @@ while True:
             mqtt.connect()
             hub.publish_birth(telemetry_interval_ms=TELEMETRY_INTERVAL_MS)
             backoff = 1
+            next_telemetry = time.ticks_ms()
 
         # Check for incoming commands
         if actuators:
             hub.check_messages()
 
-        # Read and publish telemetry if sensors present
-        if SENSOR_PRESENT and reading_plan:
-            # Read each unique driver once, cache results
-            driver_readings = {}
-            for key, hw in sensor_drivers.items():
-                try:
-                    driver_readings[key] = hw.read()
-                except Exception as e:
-                    print(f"[Sensor] Read error {key}: {e}")
+        # Read and publish telemetry on schedule
+        now = time.ticks_ms()
+        if time.ticks_diff(now, next_telemetry) >= 0:
+            if SENSOR_PRESENT and reading_plan:
+                # Read each unique driver once, cache results
+                driver_readings = {}
+                for key, hw in sensor_drivers.items():
+                    try:
+                        driver_readings[key] = hw.read()
+                    except Exception as e:
+                        print(f"[Sensor] Read error {key}: {e}")
 
-            # Map readings to sensor IDs
-            telemetry = []
-            for sensor_id, key, idx in reading_plan:
-                if key in driver_readings:
-                    telemetry.append({"id": sensor_id, "value": driver_readings[key][idx]})
+                # Map readings to sensor IDs
+                telemetry = []
+                for sensor_id, key, idx in reading_plan:
+                    if key in driver_readings:
+                        telemetry.append({"id": sensor_id, "value": driver_readings[key][idx]})
 
-            if telemetry:
-                hub.publish_telemetry(telemetry)
-        else:
-            # Keep MQTT connection alive when not publishing telemetry
-            mqtt.ping()
+                if telemetry:
+                    hub.publish_telemetry(telemetry)
+            else:
+                # Keep MQTT connection alive when not publishing telemetry
+                mqtt.ping()
 
-        time.sleep(TELEMETRY_INTERVAL_MS // 1000)
+            next_telemetry = time.ticks_add(now, TELEMETRY_INTERVAL_MS)
+
+        time.sleep(0.1)
 
     except Exception as e:
         print(f"[Error] {e}")

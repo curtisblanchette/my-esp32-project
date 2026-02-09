@@ -58,105 +58,49 @@ flowchart TB
 
 All routes funnel through `executeIntent()` — the single place where intents map to side effects. Python AI service is reduced to pure STT/TTS utilities (dead endpoints removed).
 
-## Plan
+## Implementation (completed)
 
-Extract a shared `executeIntent()` function so all routes (chat `/`, chat `/stream`, voice `/command`) call the same code. Also remove dead `/command/audio` endpoint from Node's `voice.ts`.
+### 1. Created `apps/api/src/routes/utils/executeIntent.ts` — DONE
 
-### 1. Create `apps/api/src/routes/utils/executeIntent.ts`
+Shared intent executor handling all 5 intent types:
+- **command** — `publishCommand()` + `insertCommand()` + `broadcastCommand()`
+- **query** — `getLatestByDevice()` → per-device sensor value
+- **history** — `fetchHistory()` + `formatHistoryReply()`
+- **analyze** — `analyzeSensorData()` + `formatAnalysisReply()`
+- **none** — passthrough
 
-Extract the intent switch logic that is currently copy-pasted across `chat.ts` and `voice.ts` into a single function:
+Also includes `resolveDevice()` helper that prefers LLM's `deviceId`, then context's, then fallback — enabling multi-device targeting from chat/voice.
 
-```typescript
-import type { OllamaIntent } from "../../services/ollama.js";
+### 2. Refactored `apps/api/src/routes/chat.ts` — DONE
 
-type IntentContext = {
-  deviceId?: string;
-  location?: string;
-  source: "chat" | "voice";
-  message: string;
-};
+Both `POST /` and `POST /stream` now call `executeIntent()` instead of inline if/else chains.
 
-type IntentResult = {
-  ok: boolean;
-  reply: string;
-  action?: { type: string; [key: string]: unknown };
-};
+### 3. Refactored `apps/api/src/routes/voice.ts` — DONE
 
-export async function executeIntent(
-  intent: OllamaIntent,
-  ctx: IntentContext
-): Promise<IntentResult>;
-```
+`POST /command` now calls `executeIntent()`. Dead `POST /command/audio` endpoint removed.
 
-The function handles all 5 intent types:
-- **command** — `publishCommand()` + `insertCommand()` + `broadcastCommand()`, returns `{ok, reply, action: {type:"command", correlationId, target, value}}`
-- **query** — `getLatest()` → sensor value, returns `{ok, reply, action: {type:"query", sensor, value}}`
-- **history** — `fetchHistory()` + `formatHistoryReply()`, returns `{ok, reply, action: {type:"history", timeframe, category, commands, events}}`
-- **analyze** — `analyzeSensorData()` + `formatAnalysisReply()`, returns `{ok, reply, action: {type:"analyze", timeframe, metric, analysis}}`
-- **none** — returns `{ok, reply}`
+### 4. Cleaned up Python `apps/ai/src/api.py` — DONE
 
-Imports needed: `publishCommand`, `insertCommand`, `broadcastCommand`, `getLatest`, `fetchHistory`, `formatHistoryReply`, `analyzeSensorData`, `formatAnalysisReply`
+Removed dead endpoints (`/voice/command`, `/voice/command/audio`, `/chat`), `_process_with_llm()`, `VoiceCommandResponse`, and `ChatResponse` models. Kept `ChatRequest` (used by `/voice/synthesize`). Only active endpoints remain: `/voice/transcribe`, `/voice/synthesize`, `/health`.
 
-### 2. Refactor `apps/api/src/routes/chat.ts`
+### 5. No frontend changes needed — CONFIRMED
 
-Replace the inline intent switch in both `POST /` and `POST /stream` with calls to `executeIntent()`:
+Voice responses now contain the full formatted reply (with `<detail>` tags) just like text chat. Existing `stripDetail()` and `formatMessage()` handle display/TTS separation.
 
-- **`POST /`** (~lines 26-147): replace the if/else chain with:
-  ```typescript
-  const result = await executeIntent(intent, { deviceId, location, source: "chat", message });
-  res.json(result);
-  ```
-  Special case: command intent when MQTT is disconnected (`!correlationId`) returns 503. Move this into `executeIntent` by having it return `{ok: false, reply: "...", error: "MQTT client not connected"}` and let the caller check `result.ok` to set status code.
+### 6. Multi-device targeting (follow-up enhancement)
 
-- **`POST /stream`** (~lines 190-313): after streaming completes and `intent` is available, replace the if/else chain with:
-  ```typescript
-  const result = await executeIntent(intent, { deviceId, location, source: "chat", message });
-  res.write(`data: ${JSON.stringify({ type: "done", ...result })}\n\n`);
-  ```
+While implementing, also added multi-device targeting support:
+- `OllamaIntent` type now includes optional `deviceId` on all intent variants
+- System prompt (`systemPrompt.ts`) now lists per-device sensor readings and instructs the LLM to include `deviceId`
+- `executeIntent()` uses `resolveDevice()` to resolve the correct device from LLM output, context, or fallback
 
-### 3. Refactor `apps/api/src/routes/voice.ts`
+## Files modified
 
-- **`POST /command`** (~lines 128-196): replace the if/else chain with:
-  ```typescript
-  const result = await executeIntent(intent, { deviceId, location, source: "voice", message: transcription.text });
-  res.json({ ok: result.ok, transcription: transcription.text, response: result.reply, action: result.action?.type, target: result.action?.target, value: result.action?.value });
-  ```
-
-- **Remove `POST /command/audio`** (~lines 206-294): dead code — nothing in the frontend or elsewhere calls it
-
-### 4. Clean up dead Python endpoints in `apps/ai/src/api.py`
-
-Remove unused endpoints and helpers that are dead code (web frontend never calls them):
-
-- **Remove** `POST /voice/command` (line 154-194) — web frontend uses Node's `/api/voice/command` instead
-- **Remove** `POST /voice/command/audio` (line 197-235) — same reason
-- **Remove** `POST /chat` (line 238-257) — unused
-- **Remove** `_process_with_llm()` (line 260-284) — only used by the removed endpoints
-- **Remove** `VoiceCommandResponse` model (line 90-95) — only used by removed endpoint
-- **Remove** `ChatResponse` model (line 83-87) — only used by removed endpoint
-- **Keep** `/voice/transcribe`, `/voice/synthesize`, `/health` — actively used as STT/TTS utilities
-
-### 5. No frontend changes needed
-
-- `handleVoiceInput()` already displays `result.response` as the assistant message content
-- `speakResponse(stripDetail(result.response))` already strips `<detail>` tags before TTS
-- `formatMessage()` already strips `<detail>`/`</detail>` markers for display
-- Voice responses will now contain the full formatted reply just like text chat
-
-## Files to modify
-
-| File | Change |
-|------|--------|
-| `apps/api/src/routes/utils/executeIntent.ts` | **New** — shared intent executor |
-| `apps/api/src/routes/chat.ts` | Replace inline intent logic in both handlers with `executeIntent()` |
-| `apps/api/src/routes/voice.ts` | Replace inline intent logic in both handlers with `executeIntent()` |
-| `apps/ai/src/api.py` | Remove dead endpoints: `/voice/command`, `/voice/command/audio`, `/chat`, `_process_with_llm()` |
-
-## Verification
-
-1. `cd apps/api && npx tsc --noEmit` — type check
-2. Manual test text chat: "turn on the light", "what's the temperature?", "what happened today?", "analyze temperature" — all should work as before
-3. Manual test voice: "what happened in the last hour?" — should now return formatted history with `<detail>` block, TTS speaks intro + summary
-4. Manual test voice: "analyze temperature" — should now return formatted analysis with stats/anomalies
-5. Manual test voice: "turn on the light" — should still work as before
-6. Verify Python service still works: `curl -X POST http://localhost:8000/voice/synthesize -H "Content-Type: application/json" -d '{"message":"hello"}'` — should return WAV audio
+| File | Change | Commit |
+|------|--------|--------|
+| `apps/api/src/routes/utils/executeIntent.ts` | **New** — shared intent executor with `resolveDevice()` | `6bbbe75` |
+| `apps/api/src/routes/chat.ts` | Replaced inline intent logic with `executeIntent()` | `6bbbe75` |
+| `apps/api/src/routes/voice.ts` | Replaced inline intent logic with `executeIntent()`, removed dead endpoint | `6bbbe75` |
+| `apps/ai/src/api.py` | Removed dead endpoints, kept STT/TTS utilities | `6bbbe75` |
+| `apps/api/src/services/ollama.ts` | Added optional `deviceId` to `OllamaIntent` variants | follow-up |
+| `apps/api/src/services/systemPrompt.ts` | Per-device readings, `deviceId` in intent schemas | follow-up |

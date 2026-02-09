@@ -38,8 +38,19 @@ rules:
       action: set
       value: true
       reason: "Humidity exceeded 40% for 10 seconds (test mode)"
-  - name: low_humidity_restore
-    description: "Turn off "
+
+  - name: low_humidity_alert
+    description: "Alert when it's time to water."
+    condition:
+      sensor: hum1
+      operator: "<"
+      value: 38
+      reason: "Humidity dropped below 38% for 30 seconds"
+    action:
+      target: notification_center
+      action: set
+      value: true
+      reason: "It's getting dry, consider watering soon."
 
 # LLM escalation settings
 llm:

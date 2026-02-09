@@ -76,6 +76,7 @@ export type Device = {
   lastSeen: number;
   createdAt: number;
   updatedAt: number;
+  displayOrder: number;
 };
 
 let db: DatabaseSync | null = null;
@@ -193,6 +194,13 @@ function runMigrations(db: DatabaseSync): void {
   if (!hasActuatorNames) {
     console.log("Migration: Adding actuator_names column to devices table");
     db.exec("ALTER TABLE devices ADD COLUMN actuator_names JSON NOT NULL DEFAULT '{}'");
+  }
+
+  // Add display_order column to devices table if it doesn't exist
+  const hasDisplayOrder = devicesColumns.some((col) => col.name === "display_order");
+  if (!hasDisplayOrder) {
+    console.log("Migration: Adding display_order column to devices table");
+    db.exec("ALTER TABLE devices ADD COLUMN display_order INTEGER NOT NULL DEFAULT 0");
   }
 
   // Drop relay_config table if it exists (no longer needed)
@@ -559,6 +567,7 @@ type DeviceDbRow = {
   last_seen: number;
   created_at: number;
   updated_at: number;
+  display_order: number;
 };
 
 function rowToDevice(row: DeviceDbRow): Device {
@@ -575,6 +584,7 @@ function rowToDevice(row: DeviceDbRow): Device {
     lastSeen: row.last_seen,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    displayOrder: row.display_order,
   };
 }
 
@@ -661,7 +671,7 @@ export function setDeviceOnline(deviceId: string): boolean {
 export function getDevice(deviceId: string): Device | null {
   const d = getDb();
   const stmt = d.prepare(`
-    SELECT id, location, name, platform, firmware, capabilities, actuator_names, telemetry_interval_ms, online, last_seen, created_at, updated_at
+    SELECT id, location, name, platform, firmware, capabilities, actuator_names, telemetry_interval_ms, online, last_seen, created_at, updated_at, display_order
     FROM devices WHERE id = ?
   `);
   const row = stmt.get(deviceId) as DeviceDbRow | undefined;
@@ -672,8 +682,8 @@ export function getDevice(deviceId: string): Device | null {
 export function getAllDevices(): Device[] {
   const d = getDb();
   const stmt = d.prepare(`
-    SELECT id, location, name, platform, firmware, capabilities, actuator_names, telemetry_interval_ms, online, last_seen, created_at, updated_at
-    FROM devices ORDER BY location ASC, id ASC
+    SELECT id, location, name, platform, firmware, capabilities, actuator_names, telemetry_interval_ms, online, last_seen, created_at, updated_at, display_order
+    FROM devices ORDER BY display_order ASC, location ASC, id ASC
   `);
   const rows = stmt.all() as DeviceDbRow[];
   return rows.map(rowToDevice);
@@ -682,11 +692,20 @@ export function getAllDevices(): Device[] {
 export function getOnlineDevices(): Device[] {
   const d = getDb();
   const stmt = d.prepare(`
-    SELECT id, location, name, platform, firmware, capabilities, actuator_names, telemetry_interval_ms, online, last_seen, created_at, updated_at
-    FROM devices WHERE online = 1 ORDER BY location ASC, id ASC
+    SELECT id, location, name, platform, firmware, capabilities, actuator_names, telemetry_interval_ms, online, last_seen, created_at, updated_at, display_order
+    FROM devices WHERE online = 1 ORDER BY display_order ASC, location ASC, id ASC
   `);
   const rows = stmt.all() as DeviceDbRow[];
   return rows.map(rowToDevice);
+}
+
+export function reorderDevices(orders: Array<{ id: string; order: number }>): void {
+  const d = getDb();
+  const stmt = d.prepare("UPDATE devices SET display_order = ?, updated_at = ? WHERE id = ?");
+  const now = Date.now();
+  for (const { id, order } of orders) {
+    stmt.run(order, now, id);
+  }
 }
 
 export type DeviceActuator = Actuator & {

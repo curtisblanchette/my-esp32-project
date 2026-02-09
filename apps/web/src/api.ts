@@ -39,6 +39,7 @@ export type Device = {
   lastSeen: number;
   createdAt: number;
   updatedAt: number;
+  displayOrder: number;
 };
 
 export type Command = {
@@ -111,6 +112,16 @@ export async function updateRelayName(deviceId: string, relayId: string, name: s
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
+  });
+  const data = (await r.json()) as { ok: boolean };
+  return data.ok;
+}
+
+export async function saveDeviceOrder(order: string[]): Promise<boolean> {
+  const r = await fetch("/api/devices/order", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ order }),
   });
   const data = (await r.json()) as { ok: boolean };
   return data.ok;

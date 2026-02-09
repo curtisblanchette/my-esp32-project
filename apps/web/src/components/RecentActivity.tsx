@@ -132,7 +132,7 @@ export function RecentActivity({ commands, events, errors = [], maxItems = 5 }: 
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 overflow-y-scroll">
       {displayItems.map((item) => {
         const badge = getSourceBadge(item.source);
         return (

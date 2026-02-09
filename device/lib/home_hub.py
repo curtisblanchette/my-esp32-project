@@ -12,7 +12,7 @@ import time
 class HomeHubClient:
     VERSION = 1
 
-    def __init__(self, device_id: str, location: str, mqtt_client, platform: str = "esp32"):
+    def __init__(self, device_id: str, name: str, location: str, mqtt_client, platform: str = "esp32"):
         """
         Initialize the HomeHub client.
 
@@ -23,6 +23,7 @@ class HomeHubClient:
             platform: Hardware platform identifier
         """
         self.device_id = device_id
+        self.name = name
         self.location = location
         self.platform = platform
         self.mqtt = mqtt_client
@@ -75,7 +76,7 @@ class HomeHubClient:
             telemetry_interval_ms: How often this device sends telemetry
         """
         payload = {
-            "name": f"{self.location} {self.device_id}",
+            "name": self.name,
             "platform": self.platform,
             "firmware": self._firmware_version,
             "capabilities": self.capabilities,

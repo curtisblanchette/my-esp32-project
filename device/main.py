@@ -9,13 +9,14 @@ import time
 from services.mqtt import MqttService
 
 try:
-    from secrets import MQTT_HOST, MQTT_PORT, MQTT_CLIENT_ID, DEVICE_LOCATION
+    from secrets import MQTT_HOST, MQTT_PORT, MQTT_CLIENT_ID, DEVICE_LOCATION, DEVICE_NAME
     from secrets import SENSORS, ACTUATORS, TELEMETRY_INTERVAL_MS
 except ImportError:
     MQTT_HOST = "192.168.1.84"
     MQTT_PORT = 1883
     MQTT_CLIENT_ID = "esp32-1"
-    DEVICE_LOCATION = "room1"
+    DEVICE_LOCATION = "Grow Room"
+    DEVICE_NAME = "Grow System"
     SENSORS = "[]"
     ACTUATORS = "[]"
     TELEMETRY_INTERVAL_MS = 5000
@@ -41,6 +42,7 @@ mqtt = MqttService(
 # Setup HomeHub client
 hub = HomeHubClient(
     device_id=MQTT_CLIENT_ID,
+    name=DEVICE_NAME,
     location=DEVICE_LOCATION,
     mqtt_client=mqtt
 )

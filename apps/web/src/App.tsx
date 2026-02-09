@@ -1,12 +1,11 @@
 import React, { useEffect, useState, useCallback } from "react";
 
-import { fetchLatest, type LatestReading, type Command, type DeviceEvent, type Device } from "./api";
+import { fetchLatest, type LatestReading, type Command, type DeviceEvent, type Device, RelayStatus } from './api';
 import { DevicePanel } from "./components/DevicePanel";
 import { DeviceDiscoveryState } from "./components/DeviceDiscoveryState";
 import { RecentActivity, type ErrorItem } from "./components/RecentActivity";
 import { ChatInput } from "./components/ChatInput";
 import { useWebSocket } from "./hooks/useWebSocket";
-import { useRelays } from "./hooks/useRelays";
 
 type DiscoveryPhase = "discovering" | "complete";
 
@@ -19,7 +18,7 @@ export function App(): React.ReactElement {
   const [commands, setCommands] = useState<Command[]>([]);
   const [events, setEvents] = useState<DeviceEvent[]>([]);
   const [errors, setErrors] = useState<ErrorItem[]>([]);
-  const { relays, applyRelays, handleStateChange, handleNameChange } = useRelays();
+  const [wsRelayUpdates, setWsRelayUpdates] = useState<RelayStatus[] | null>(null)
 
   const addError = useCallback((message: string, source?: string) => {
     const error: ErrorItem = {
@@ -43,7 +42,7 @@ export function App(): React.ReactElement {
       }
     },
     onRelayUpdate: (relayList) => {
-      applyRelays(relayList);
+      setWsRelayUpdates(relayList);
     },
     onDevicesUpdate: (deviceList) => {
       setDevices(deviceList);
@@ -56,15 +55,11 @@ export function App(): React.ReactElement {
       setEvents((prev) => [event, ...prev].slice(0, 20));
       // Sync relay state and update command status from command_ack events
       if (event.eventType === "command_ack" && event.data) {
-        const { correlationId, status, target, actualValue } = event.data as {
+        const { correlationId, status, actualValue } = event.data as {
           correlationId?: string;
           status?: string;
-          target?: string;
           actualValue?: boolean;
         };
-        if (target && actualValue !== undefined) {
-          handleStateChange(target, Boolean(actualValue));
-        }
         // Update the matching command's status so Recent Activity shows the ACK
         if (correlationId && status) {
           setCommands((prev) =>
@@ -117,9 +112,9 @@ export function App(): React.ReactElement {
     <div className="min-h-screen flex flex-col">
       {/* Main content area */}
       <div className="flex-1 w-screen flex justify-center p-5 pb-40 md:pb-24">
-        <div className="w-full max-w-[1400px] flex flex-col md:flex-row md:items-start gap-5">
+        <div className="w-full max-w-[1420px] flex flex-row md:flex-row md:items-start gap-5">
           {/* Device panels section */}
-          <div className="flex-1 md:flex-[3] min-w-0 flex flex-col gap-5">
+          <div className="flex-1 md:flex-[3] min-w-0 flex flex-wrap justify-center flex-row gap-5">
             {/* Discovery state or device panels */}
             {discoveryPhase === "discovering" && devices.length === 0 ? (
               <DeviceDiscoveryState />
@@ -129,11 +124,9 @@ export function App(): React.ReactElement {
                   key={device.id}
                   device={device}
                   latestReading={latestByDevice[device.id] || null}
-                  relays={relays}
                   commands={commands}
                   isConnected={isConnected}
-                  onRelayStateChange={handleStateChange}
-                  onRelayNameChange={handleNameChange}
+                  wsRelayUpdates={wsRelayUpdates}
                   onError={addError}
                 />
               ))

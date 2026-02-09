@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useCallback, useEffect, useMemo } from 'react';
 import { SensorCard } from "./SensorCard";
 import { RelayControl } from "./RelayControl";
 import { AIStatusIndicator } from "./AIStatusIndicator";
@@ -11,6 +11,7 @@ import {
   hasActuators,
 } from "../api";
 import { fmtTime } from "../lib/format";
+import { useRelays } from '../hooks/useRelays';
 
 function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
@@ -27,11 +28,9 @@ function tempToMix(tC: number): number {
 interface DevicePanelProps {
   device: Device;
   latestReading: LatestReading | null;
-  relays: RelayStatus[];
   commands: Command[];
   isConnected: boolean;
-  onRelayStateChange: (relayId: string, state: boolean) => void;
-  onRelayNameChange: (relayId: string, name: string) => void;
+  wsRelayUpdates: RelayStatus[] | null;
   onError: (message: string, source?: string) => void;
 }
 
@@ -39,13 +38,13 @@ export function DevicePanel(props: DevicePanelProps): React.ReactElement {
   const {
     device,
     latestReading,
-    relays,
     commands,
     isConnected,
-    onRelayStateChange,
-    onRelayNameChange,
+    wsRelayUpdates,
     onError,
   } = props;
+
+  const { relays, applyRelays, handleStateChange, handleNameChange } = useRelays(device.id);
 
   // Check if AI is active (had commands for this device in last 5 minutes)
   const aiStatus = useMemo(() => {
@@ -76,16 +75,22 @@ export function DevicePanel(props: DevicePanelProps): React.ReactElement {
     return { t, h, mix, tempSub, humiditySub, tempNote, humidityNote };
   }, [latestReading]);
 
-  // Filter relays for this device
-  const deviceRelays = relays.filter((r) => r.deviceId === device.id);
+  useEffect(() => {
+    if(wsRelayUpdates) {
+      const mine = wsRelayUpdates.filter(r => r.deviceId === device.id);
+      if (mine.length > 0) {
+        applyRelays(mine);
+      }
+    }
+  }, [wsRelayUpdates, device.id, applyRelays]);
   const hasOfflineDevice = !device.online;
   const showSensors = hasTempHumiditySensors(device);
   const showRelays = hasActuators(device);
 
   return (
-    <div className="flex-1 min-w-0 border border-panel-border rounded-2xl p-5 backdrop-blur-[10px]">
+    <div className="flex-1 min-w-[480px] border max-w-[500px] border-panel-border rounded-2xl p-5 backdrop-blur-[10px] h-[fit-content]">
       {/* Device header */}
-      <div className="w-full flex justify-between items-center mb-3">
+      <div className="w-full flex justify-between items-center mb-6">
         <div className="flex items-center gap-3">
           <img src="/microcontroller.png" alt="" className="w-10 h-10" />
           <div>
@@ -122,6 +127,7 @@ export function DevicePanel(props: DevicePanelProps): React.ReactElement {
       {/* Sensor gauges and charts (only if device has temp/humidity sensors) */}
       {showSensors && (
         <div className="mt-3">
+          <h2 className="text-sm font-medium opacity-80 mb-2">Sensors</h2>
           <SensorCard
             temp={derived?.t ?? null}
             humidity={derived?.h ?? null}
@@ -155,21 +161,22 @@ export function DevicePanel(props: DevicePanelProps): React.ReactElement {
               </div>
             )}
           </div>
-          {deviceRelays.length > 0 ? (
+          {relays.length > 0 ? (
             <div className="flex flex-wrap gap-3">
-              {deviceRelays.map((relay) => (
+              {relays.map((relay: RelayStatus) => (
                 <RelayControl
+                  deviceId={device.id}
                   key={relay.id}
                   relay={relay}
-                  onStateChange={onRelayStateChange}
-                  onNameChange={onRelayNameChange}
+                  onStateChange={handleStateChange}
+                  onNameChange={handleNameChange}
                   onError={onError}
                 />
               ))}
             </div>
           ) : (
             <div className="text-sm opacity-60">
-              No relays configured for this device.
+              No actuators configured for this device.
             </div>
           )}
         </div>
@@ -182,12 +189,6 @@ export function DevicePanel(props: DevicePanelProps): React.ReactElement {
         </div>
       )}
 
-      {/* Last update time */}
-      <div className="mt-3 text-xs opacity-75">
-        {latestReading
-          ? `Last update: ${fmtTime(latestReading.updatedAt)}`
-          : "Waiting for first reading..."}
-      </div>
     </div>
   );
 }

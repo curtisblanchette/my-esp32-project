@@ -12,6 +12,15 @@ export enum DateRangePreset {
   CUSTOM = "custom",
 }
 
+const dateRangePresetMs: Record<Exclude<DateRangePreset, "custom">, number> = {
+  [DateRangePreset.ONE_HOUR]: 60 * 60 * 1000,
+  [DateRangePreset.SIX_HOUR]: 6 * 60 * 60 * 1000,
+  [DateRangePreset.TWELVE_HOUR]: 12 * 60 * 60 * 1000,
+  [DateRangePreset.TWENTY_FOUR_HOUR]: 24 * 60 * 60 * 1000,
+  [DateRangePreset.SEVEN_DAY]: 7 * 24 * 60 * 60 * 1000,
+  [DateRangePreset.THIRTY_DAY]: 30 * 24 * 60 * 60 * 1000,
+};
+
 export const dateRangePresets = Object.values(DateRangePreset);
 
 function getPresetRange(
@@ -23,15 +32,8 @@ function getPresetRange(
   if (preset === "custom" && customStart && customEnd) {
     return { sinceMs: customStart, untilMs: customEnd };
   }
-  const ranges: Record<Exclude<DateRangePreset, "custom">, number> = {
-    [DateRangePreset.ONE_HOUR]: 60 * 60 * 1000,
-    [DateRangePreset.SIX_HOUR]: 6 * 60 * 60 * 1000,
-    [DateRangePreset.TWELVE_HOUR]: 12 * 60 * 60 * 1000,
-    [DateRangePreset.TWENTY_FOUR_HOUR]: 24 * 60 * 60 * 1000,
-    [DateRangePreset.SEVEN_DAY]: 7 * 24 * 60 * 60 * 1000,
-    [DateRangePreset.THIRTY_DAY]: 30 * 24 * 60 * 60 * 1000,
-  };
-  const duration = ranges[preset as Exclude<DateRangePreset, "custom">] || ranges["6h"];
+
+  const duration = dateRangePresetMs[preset as Exclude<DateRangePreset, "custom">] || dateRangePresetMs["6h"];
   return { sinceMs: now - duration, untilMs: now };
 }
 
@@ -65,15 +67,25 @@ export function useHistory(options: UseHistoryOptions = {}) {
   // Fetch history when range changes
   useEffect(() => {
     const controller = new AbortController();
+    const JS_DATERANGE_TO_INDEX = [
+      DateRangePreset.ONE_HOUR,
+      DateRangePreset.SIX_HOUR,
+      DateRangePreset.TWELVE_HOUR,
+      DateRangePreset.TWENTY_FOUR_HOUR,
+      DateRangePreset.SEVEN_DAY,
+      DateRangePreset.THIRTY_DAY,
+    ];
 
     async function loadHistory() {
       try {
         const { sinceMs, untilMs } = getPresetRange(dateRangePreset, customStartMs, customEndMs);
+        const hours = Math.floor((untilMs / 60 / 60 / 1000) - (sinceMs / 60 / 60 / 1000));
+        const pointsInHour = 60;
         setTimeRangeBounds({ sinceMs, untilMs });
         const points = await fetchHistory({
           sinceMs,
           untilMs,
-          limit: 800,
+          limit: (JS_DATERANGE_TO_INDEX.indexOf(dateRangePreset) + 1) * hours * pointsInHour,
           bucketMs: 60_000,
           deviceId,
           signal: controller.signal,
@@ -115,7 +127,7 @@ export function useHistory(options: UseHistoryOptions = {}) {
         const filtered = updated.filter(
           (p) =>
             Number(p.ts) >= timeRangeBounds.sinceMs &&
-            Number(p.ts) <= timeRangeBounds.untilMs + 60000
+            Number(p.ts) <= timeRangeBounds.untilMs + 60_000
         );
 
         setHistorySub(generateHistorySub(filtered));

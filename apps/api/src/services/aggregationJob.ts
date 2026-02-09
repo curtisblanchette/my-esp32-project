@@ -10,6 +10,7 @@ type AggregatedBucket = {
   humiditySum: number;
   count: number;
   sourceTopic: string | null;
+  deviceId: string;
 };
 
 export function startAggregationJob(): void {
@@ -55,13 +56,14 @@ async function aggregateAndFlush(): Promise<void> {
         humiditySum: reading.humidity,
         count: 1,
         sourceTopic: reading.sourceTopic,
+        deviceId: reading.deviceId
       });
     }
   }
 
   const db = getDb();
   const stmt = db.prepare(
-    "INSERT INTO sensor_readings (ts, temp, humidity, source_topic) VALUES (?, ?, ?, ?)"
+    "INSERT INTO sensor_readings (ts, temp, humidity, source_topic, device_id) VALUES (?, ?, ?, ?, ?)"
   );
 
   let insertedCount = 0;
@@ -69,7 +71,7 @@ async function aggregateAndFlush(): Promise<void> {
     const avgTemp = Math.round((bucket.tempSum / bucket.count) * 100) / 100;
     const avgHumidity = Math.round((bucket.humiditySum / bucket.count) * 100) / 100;
 
-    stmt.run(bucket.ts, avgTemp, avgHumidity, bucket.sourceTopic);
+    stmt.run(bucket.ts, avgTemp, avgHumidity, bucket.sourceTopic, bucket.deviceId);
     insertedCount++;
   }
 

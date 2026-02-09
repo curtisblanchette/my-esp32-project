@@ -90,14 +90,14 @@ export async function fetchHistory(args: {
   return Array.isArray(data.points) ? data.points : [];
 }
 
-export async function fetchRelayStatus(signal?: AbortSignal): Promise<RelayStatus[]> {
-  const r = await fetch("/api/relays", { cache: "no-store", signal });
+export async function fetchRelayStatus(deviceId: string, signal?: AbortSignal): Promise<RelayStatus[]> {
+  const r = await fetch(`/api/devices/${deviceId}/relays`, { cache: "no-store", signal });
   const data = (await r.json()) as { ok: boolean; relays: RelayStatus[] };
   return Array.isArray(data.relays) ? data.relays : [];
 }
 
-export async function setRelayState(relayId: string, state: boolean): Promise<boolean> {
-  const r = await fetch(`/api/relays/${relayId}`, {
+export async function setRelayState(deviceId: string, relayId: string, state: boolean): Promise<boolean> {
+  const r = await fetch(`/api/devices/${deviceId}/relays/${relayId}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ state }),
@@ -106,8 +106,8 @@ export async function setRelayState(relayId: string, state: boolean): Promise<bo
   return data.ok;
 }
 
-export async function updateRelayName(relayId: string, name: string): Promise<boolean> {
-  const r = await fetch(`/api/relays/${relayId}`, {
+export async function updateRelayName(deviceId: string, relayId: string, name: string): Promise<boolean> {
+  const r = await fetch(`/api/devices/${deviceId}/relays/${relayId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),

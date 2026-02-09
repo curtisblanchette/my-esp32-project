@@ -11,12 +11,12 @@ import { publishCommand } from "../services/mqttTelemetry.js";
 import { broadcastCommand } from "../services/websocket.js";
 
 export function createRelaysRouter(): Router {
-  const router = Router();
+  const router = Router({mergeParams: true});
 
-  // GET /api/relays - List all relays from device actuators
-  router.get("/", (_req: Request, res: Response) => {
+  // GET /api/devices/:deviceId/relays - List all relays from device actuators
+  router.get("/", (req: Request, res: Response) => {
     try {
-      const actuators = getDeviceActuators();
+      const actuators = getDeviceActuators(String(req.params.deviceId));
 
       const relays = actuators.map((actuator) => ({
         id: actuator.id,
@@ -35,11 +35,11 @@ export function createRelaysRouter(): Router {
     }
   });
 
-  // GET /api/relays/:id - Get a single relay by ID
+  // GET /api/devices/:deviceId/relays/:id - Get a single relay by ID
   router.get("/:id", (req: Request, res: Response) => {
     try {
       const relayId = req.params.id as string;
-      const actuators = getDeviceActuators();
+      const actuators = getDeviceActuators(String(req.params.deviceId));
       const actuator = actuators.find((a) => a.id === relayId);
 
       if (!actuator) {
@@ -63,10 +63,10 @@ export function createRelaysRouter(): Router {
     }
   });
 
-  // POST /api/relays/:id - Control relay state (toggle on/off)
+  // POST /api/devices/:deviceId/relays/:id - Control relay state (toggle on/off)
   router.post("/:id", (req: Request, res: Response) => {
     try {
-      const { state, deviceId, location } = req.body;
+      const { state } = req.body;
       if (typeof state !== "boolean") {
         res.status(400).json({ ok: false, error: "state must be a boolean" });
         return;
@@ -75,7 +75,7 @@ export function createRelaysRouter(): Router {
       const relayId = req.params.id as string;
 
       // Find the actuator from device capabilities
-      const actuators = getDeviceActuators();
+      const actuators = getDeviceActuators(String(req.params.deviceId));
       const actuator = actuators.find((a) => a.id === relayId);
 
       if (!actuator) {
@@ -85,9 +85,8 @@ export function createRelaysRouter(): Router {
 
       const relayName = actuator.customName ?? actuator.name ?? relayId;
 
-      // Determine device info from actuator or request body override
-      const targetDeviceId = deviceId ?? actuator.deviceId;
-      const targetLocation = location ?? actuator.location;
+      const targetDeviceId = String(req.params.deviceId);
+      const targetLocation = actuator.location;
 
       // Send command to device via MQTT
       const correlationId = publishCommand({
@@ -138,22 +137,21 @@ export function createRelaysRouter(): Router {
     }
   });
 
-  // PATCH /api/relays/:id - Update relay name
+  // PATCH /api/devices/:deviceId/relays/:id - Update relay name
   router.patch("/:id", (req: Request, res: Response) => {
     try {
-      const { name, deviceId } = req.body;
+      const { name } = req.body;
       const relayId = req.params.id as string;
+      const targetDeviceId = String(req.params.deviceId);
 
       // Find the actuator to get its device
-      const actuators = getDeviceActuators();
+      const actuators = getDeviceActuators(targetDeviceId);
       const actuator = actuators.find((a) => a.id === relayId);
 
       if (!actuator) {
         res.status(404).json({ ok: false, error: "Relay not found" });
         return;
       }
-
-      const targetDeviceId = deviceId ?? actuator.deviceId;
 
       if (name !== undefined) {
         const updated = updateActuatorName(targetDeviceId, relayId, name);
@@ -184,13 +182,13 @@ export function createRelaysRouter(): Router {
     }
   });
 
-  // DELETE /api/relays/:id - Remove custom name (relay itself comes from device)
+  // DELETE /api/devices/:deviceId/relays/:id - Remove custom name (relay itself comes from device)
   router.delete("/:id", (req: Request, res: Response) => {
     try {
       const relayId = req.params.id as string;
 
       // Find the actuator to get its device
-      const actuators = getDeviceActuators();
+      const actuators = getDeviceActuators(String(req.params.deviceId));
       const actuator = actuators.find((a) => a.id === relayId);
 
       if (!actuator) {

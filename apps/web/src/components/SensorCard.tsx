@@ -2,7 +2,8 @@ import React, { useEffect, useMemo } from "react";
 import { MetricChart } from "./MetricChart";
 import { type LatestReading } from "../api";
 import { useHistory, DateRangePreset, dateRangePresets } from "../hooks/useHistory";
-import { formatDateForInput, fmt1 } from "../lib/format";
+import { formatDateForInput, fmt1, fmtTime } from '../lib/format';
+import { GlassCard } from './ui-kit/GlassCard';
 
 interface SensorCardProps {
   temp: number | null;
@@ -52,13 +53,13 @@ export function SensorCard(props: SensorCardProps): React.ReactElement {
   }, [history]);
 
   return (
-    <div className="glass-card rounded-2xl p-5 [container-type:inline-size] overflow-hidden min-w-0">
+    <GlassCard variant={'col'}>
       {/* Gauges row */}
       <div className="flex justify-center gap-6 mb-6">
         {/* Temperature Gauge */}
         <div className="flex flex-col items-center flex-1">
           <div className="mb-3 w-full">
-            <div className="opacity-80 text-xs tracking-wider text-left">Temperature</div>
+            <div className="opacity-80 text-xs tracking-wider text-center">Temperature</div>
           </div>
           <div
             className="circle tempCircle rounded-full relative grid place-items-center isolate"
@@ -78,7 +79,7 @@ export function SensorCard(props: SensorCardProps): React.ReactElement {
         {/* Humidity Gauge */}
         <div className="flex flex-col items-center flex-1">
           <div className="mb-3 w-full">
-            <div className="opacity-80 text-xs tracking-wider text-left">Relative Humidity</div>
+            <div className="opacity-80 text-xs tracking-wider text-center">Relative Humidity</div>
           </div>
           <div
             className="circle humidityCircle rounded-full relative grid place-items-center isolate"
@@ -175,6 +176,11 @@ export function SensorCard(props: SensorCardProps): React.ReactElement {
           </div>
         </div>
       </div>
-    </div>
+      <div className="mt-2 text-xs flex align-right justify-end opacity-75">
+        {props.latestReading
+          ? `Last update: ${fmtTime(props.latestReading.updatedAt)}`
+          : `Waiting for first reading...`}
+      </div>
+    </GlassCard>
   );
 }

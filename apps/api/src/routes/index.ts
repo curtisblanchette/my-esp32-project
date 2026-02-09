@@ -23,7 +23,7 @@ export function createApiRouter(): Router {
   router.use("/devices", createDevicesRouter());
 
   // Relays routes: /api/relays
-  router.use("/relays", createRelaysRouter());
+  router.use("/devices/:deviceId/relays", createRelaysRouter());
 
   // Chat routes: /api/chat
   router.use("/chat", createChatRouter());

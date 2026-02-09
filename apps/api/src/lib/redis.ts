@@ -6,7 +6,7 @@ export type RedisReading = {
   temp: number;
   humidity: number;
   sourceTopic: string | null;
-  deviceId: string | null;
+  deviceId: string;
 };
 
 let redisClient: ReturnType<typeof createClient> | null = null;

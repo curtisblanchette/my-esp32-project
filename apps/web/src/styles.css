@@ -38,7 +38,7 @@ body {
   }
 
   .circle {
-    --size: clamp(200px, 22cqw, 200px);
+    --size: clamp(186px, 22cqw, 186px);
     width: var(--size);
     height: var(--size);
   }

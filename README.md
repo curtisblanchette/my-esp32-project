@@ -331,23 +331,37 @@ The project uses a central registry (`device/registry.json`) to manage multiple 
 {
   "devices": {
     "esp32-1": {
-      "location": "room1",
-      "sensor_pin": 2,
-      "sensor_type": "DHT11",
-      "led_pin": 5
+      "location": "living-room",
+      "telemetry_interval_ms": 5000,
+      "sensors": [
+        { "id": "temp1", "type": "temperature", "unit": "celsius", "pin": 2, "driver": "DHT11" },
+        { "id": "hum1", "type": "humidity", "unit": "percent", "pin": 2, "driver": "DHT11" }
+      ],
+      "actuators": [
+        { "id": "relay1", "type": "switch", "name": "Status LED", "pin": 5 }
+      ]
     },
     "esp32-2": {
-      "location": "room1",
-      "sensor_pin": 4,
-      "sensor_type": "DHT11",
-      "led_pin": 2
+      "location": "bedroom",
+      "sensors": [
+        { "id": "temp1", "type": "temperature", "unit": "celsius", "pin": 4, "driver": "DHT22" },
+        { "id": "hum1", "type": "humidity", "unit": "percent", "pin": 4, "driver": "DHT22" }
+      ]
+    },
+    "esp32-3": {
+      "location": "garage",
+      "actuators": [
+        { "id": "relay1", "type": "switch", "name": "Overhead Light", "pin": 5 },
+        { "id": "relay2", "type": "switch", "name": "Workbench Light", "pin": 18 }
+      ]
     }
   },
   "defaults": {
-    "mqtt_host": "192.168.1.XXX",
+    "mqtt_host": "192.168.1.100",
     "mqtt_port": 1883,
     "wifi_ssid": "Your_WiFi_SSID",
-    "wifi_password": "Your_WiFi_Password"
+    "wifi_password": "Your_WiFi_Password",
+    "telemetry_interval_ms": 5000
   }
 }
 ```

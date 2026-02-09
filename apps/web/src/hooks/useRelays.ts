@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { fetchRelayStatus, type RelayStatus } from "../api";
 
-export function useRelays() {
+export function useRelays(deviceId: string) {
   const [relays, setRelays] = useState<RelayStatus[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -18,7 +18,7 @@ export function useRelays() {
     async function loadRelays() {
       setIsLoading(true);
       try {
-        const relayList = await fetchRelayStatus(controller.signal);
+        const relayList = await fetchRelayStatus(deviceId, controller.signal);
         applyRelays(relayList);
       } catch (err) {
         if (err instanceof Error && err.name !== "AbortError") {
@@ -35,15 +35,15 @@ export function useRelays() {
     return () => {
       controller.abort();
     };
-  }, [applyRelays]);
+  }, [deviceId, applyRelays]);
 
-  const handleStateChange = useCallback((relayId: string, newState: boolean) => {
+  const handleStateChange = useCallback((deviceId: string, relayId: string, newState: boolean) => {
     setRelays((prev) =>
       prev.map((r) => (r.id === relayId ? { ...r, state: newState, updatedAt: Date.now() } : r))
     );
   }, []);
 
-  const handleNameChange = useCallback((relayId: string, newName: string) => {
+  const handleNameChange = useCallback((deviceId: string, relayId: string, newName: string) => {
     setRelays((prev) =>
       prev.map((r) => (r.id === relayId ? { ...r, name: newName, updatedAt: Date.now() } : r))
     );

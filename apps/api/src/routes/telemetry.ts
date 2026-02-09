@@ -13,7 +13,7 @@ export function createTelemetryRouter(): Router {
   router.get("/history", async (req: Request, res: Response) => {
     const sinceMs = Number(req.query.sinceMs);
     const untilMs = req.query.untilMs === undefined ? Date.now() : Number(req.query.untilMs);
-    const limit = req.query.limit === undefined ? 5000 : Number(req.query.limit);
+    const limit = req.query.limit === undefined || Number(req.query.limit) >= 10000 ? 5000 : Number(req.query.limit);
     const bucketMs = req.query.bucketMs === undefined ? null : Number(req.query.bucketMs);
     const deviceId = typeof req.query.deviceId === "string" ? req.query.deviceId : undefined;
 

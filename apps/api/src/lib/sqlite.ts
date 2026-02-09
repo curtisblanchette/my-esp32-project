@@ -197,6 +197,9 @@ function runMigrations(db: DatabaseSync): void {
 
   // Drop relay_config table if it exists (no longer needed)
   db.exec("DROP TABLE IF EXISTS relay_config");
+
+  // Back-fill empty device_id columns in sensor_readings
+  db.exec("UPDATE sensor_readings SET device_id = 'esp32-1' WHERE device_id IS NULL")
 }
 
 export function insertReading(row: TelemetryRow): void {

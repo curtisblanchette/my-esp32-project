@@ -106,9 +106,6 @@ export function initMqttTelemetry(): void {
         handleEnvelopeMessage(topic, json);
         return;
       }
-
-      // Handle legacy format (direct telemetry without envelope)
-      handleLegacyTelemetry(topic, json);
     } catch (e) {
       console.error("MQTT message parse error", e);
     }
@@ -359,32 +356,4 @@ function handleWill(deviceId: string): void {
 
   // Broadcast updated device list to WebSocket clients
   broadcastDevices();
-}
-
-function handleLegacyTelemetry(topic: string, json: unknown): void {
-  // Legacy format: { tempC, humidity, ts }
-  const reading = parseTelemetry(json);
-  if (!reading) return;
-
-  const ts = Date.now();
-  const latestReading = {
-    temp: reading.temp,
-    humidity: reading.humidity,
-    updatedAt: ts,
-    sourceTopic: topic,
-    deviceId: undefined, // Legacy readings don't have deviceId
-  };
-
-  setLatest(latestReading);
-  broadcastLatestReading(latestReading);
-
-  storeReading({
-    ts,
-    temp: reading.temp,
-    humidity: reading.humidity,
-    sourceTopic: topic,
-    deviceId: null, // Legacy readings don't have deviceId
-  }).catch((err) => {
-    console.error("Failed to store reading in Redis", err);
-  });
 }

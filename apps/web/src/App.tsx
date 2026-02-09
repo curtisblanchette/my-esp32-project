@@ -187,7 +187,7 @@ export function App(): React.ReactElement {
       <div className="flex-1 w-full flex justify-center px-3 py-5 pb-40 md:px-5 md:pb-24">
         <div className="w-full">
           {/* Device panels section */}
-          <div className="flex-1 min-w-0 flex flex-wrap justify-center flex-row gap-5">
+          <div className="flex-1 min-w-0 flex flex-wrap justify-left flex-row gap-5">
             {/* Discovery state or device panels */}
             {discoveryPhase === "discovering" && devices.length === 0 ? (
               <DeviceDiscoveryState />

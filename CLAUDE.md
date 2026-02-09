@@ -113,18 +113,18 @@ flowchart TB
 - `GET /api/latest` - Current sensor reading
 - `GET /api/history` - Historical data with optional bucketing (`sinceMs`, `untilMs`, `bucketMs`, `deviceId`)
 
-**Relays**
-- `GET /api/relays` - All relay configurations
-- `POST /api/relays` - Create relay config
-- `GET /api/relays/:id` - Single relay
-- `POST /api/relays/:id` - Control relay state (`{state: boolean}`)
-- `PATCH /api/relays/:id` - Update relay config
-- `DELETE /api/relays/:id` - Delete relay
-
 **Devices**
 - `GET /api/devices` - Registered devices
 - `GET /api/devices/:id` - Single device
 - `GET /api/devices/:id/actuators` - Device actuators
+- `PUT /api/devices/order` - Reorder devices (`{order: string[]}` of device IDs)
+
+**Relays (per-device)**
+- `GET /api/devices/:deviceId/relays` - Device relay states
+- `GET /api/devices/:deviceId/relays/:id` - Single relay
+- `POST /api/devices/:deviceId/relays/:id` - Control relay state (`{state: boolean}`)
+- `PATCH /api/devices/:deviceId/relays/:id` - Update relay name
+- `DELETE /api/devices/:deviceId/relays/:id` - Delete relay
 
 **Commands & Events**
 - `GET /api/commands` - Command history
@@ -158,7 +158,7 @@ flowchart TB
 - `apps/api/src/services/systemPrompt.ts` - LLM system prompt with intent schemas
 - `apps/api/src/services/commandExpirationJob.ts` - Command TTL management
 - `apps/api/src/lib/redis.ts` - Redis client with 48hr TTL storage
-- `apps/api/src/lib/sqlite.ts` - SQLite queries + relay config
+- `apps/api/src/lib/sqlite.ts` - SQLite queries, device registry, display order
 - `apps/api/src/routes/` - API endpoint handlers (telemetry, relays, devices, commands, events, chat, voice)
 - `apps/api/src/routes/utils/executeIntent.ts` - Shared intent executor for chat + voice routes
 - `apps/api/src/routes/utils/analysis.ts` - Sensor data analysis and formatting
@@ -222,16 +222,16 @@ flowchart TB
 **Layout Structure (App.tsx):**
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Toast notifications (fixed top-right)                       │
-├─────────────────────────────────────────────────────────────┤
-│  Main content (flex, max-w-[1600px])                        │
-│  ┌─────────────────────────────┬──────────────────────────┐ │
-│  │  Dashboard (flex-1)          │  Recent Activity (320px) │ │
-│  │  - Device header             │  - Activity feed         │ │
-│  │  - SensorCard (gauges+charts)│                          │ │
-│  │  - RelayControls             │                          │ │
-│  │  - Last update time          │                          │ │
-│  └─────────────────────────────┴──────────────────────────┘ │
+│  Activity toggle (fixed top-right)     Drawer (340px, z-30) │
+├─────────────────────────────────────── ┌──────────────────┐ │
+│  Main content (centered, flex-wrap)    │ Recent Activity   │ │
+│  ┌──────────────┐ ┌──────────────┐    │ (slide-out right) │ │
+│  │ DevicePanel   │ │ DevicePanel   │    │                  │ │
+│  │ (drag-sort)   │ │ (drag-sort)   │    └──────────────────┘ │
+│  │ - Drag handle │ │              │                          │
+│  │ - Sensors     │ │              │                          │
+│  │ - Actuators   │ │              │                          │
+│  └──────────────┘ └──────────────┘                          │
 ├─────────────────────────────────────────────────────────────┤
 │  ChatInput (fixed bottom, backdrop-blur)                    │
 └─────────────────────────────────────────────────────────────┘
@@ -240,20 +240,22 @@ flowchart TB
 **Key Component Files:**
 - `apps/web/src/styles.css` - Global styles, Tailwind config, custom components
 - `apps/web/src/components/SensorCard.tsx` - Combined temp/humidity gauges with charts
-- `apps/web/src/components/MetricCard.tsx` - Individual metric card (alternate layout)
+- `apps/web/src/components/DevicePanel.tsx` - Per-device panel with drag-and-drop (via @dnd-kit)
 - `apps/web/src/components/ChatInput.tsx` - AI assistant input
-- `apps/web/src/components/RecentActivity.tsx` - Activity feed sidebar
+- `apps/web/src/components/RecentActivity.tsx` - Activity feed (slide-out drawer)
+
+**Drag-and-Drop Notes:**
+- Uses `@dnd-kit/core` + `@dnd-kit/sortable` for panel reordering
+- `DragOverlay` renders the dragged panel in a portal (preserves `backdrop-blur`)
+- No CSS transforms on items — live array reorder via `onDragOver` instead
+- Order persisted to SQLite `display_order` column via `PUT /api/devices/order`
+- Grip handle in device header initiates drag; relay toggles and buttons unaffected
 
 **Responsive Design Notes:**
-- Single breakpoint at 560px in styles.css (background gradient only)
-- Sidebar uses fixed `w-[320px] shrink-0` - no responsive stacking
+- Mobile: `px-3` padding, `min-w-[390px]` panels; Desktop: `px-5`
 - Gauge circles use `clamp()` for fluid sizing: `--size: clamp(140px, 22cqw, 200px)`
 - Charts use `h-[clamp(140px,20vh,200px)]` for fluid height
-
-**Known Layout Patterns:**
-- Two-column layout doesn't collapse on narrow viewports
-- `min-w-0` on flex children prevents overflow issues
-- `overflow-hidden` on cards can clip content if not careful
+- Pinch zoom disabled via viewport meta (`user-scalable=no`)
 
 ## Chat & Voice Response Format
 

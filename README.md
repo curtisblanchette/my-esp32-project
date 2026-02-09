@@ -331,6 +331,7 @@ The project uses a central registry (`device/registry.json`) to manage multiple 
 {
   "devices": {
     "esp32-1": {
+      "name": "Living Room Hub",
       "location": "living-room",
       "telemetry_interval_ms": 5000,
       "sensors": [
@@ -342,6 +343,7 @@ The project uses a central registry (`device/registry.json`) to manage multiple 
       ]
     },
     "esp32-2": {
+      "name": "Bedroom Sensor",
       "location": "bedroom",
       "sensors": [
         { "id": "temp1", "type": "temperature", "unit": "celsius", "pin": 4, "driver": "DHT22" },
@@ -349,6 +351,7 @@ The project uses a central registry (`device/registry.json`) to manage multiple 
       ]
     },
     "esp32-3": {
+      "name": "Garage Controller",
       "location": "garage",
       "actuators": [
         { "id": "relay1", "type": "switch", "name": "Overhead Light", "pin": 5 },
@@ -369,10 +372,10 @@ The project uses a central registry (`device/registry.json`) to manage multiple 
 | Field | Description |
 |-------|-------------|
 | `devices.<id>` | Unique device identifier used in MQTT topics |
+| `name` | Human-friendly display name (shown in dashboard and MQTT birth) |
 | `location` | Physical location (used in topic hierarchy) |
-| `sensor_pin` | GPIO pin for the sensor |
-| `sensor_type` | Sensor model (`DHT11`, `DHT22`, etc.) |
-| `led_pin` | GPIO pin for status LED |
+| `sensors` | Array of sensor definitions (`id`, `type`, `unit`, `pin`, `driver`) |
+| `actuators` | Array of actuator definitions (`id`, `type`, `name`, `pin`) |
 | `defaults` | Shared network configuration for all devices |
 
 The flash script reads from this registry and auto-generates `secrets.py` for the target device.
@@ -520,7 +523,7 @@ flowchart TB
 | `telemetry` | Historical sensor readings |
 | `command` | Command history with status |
 | `event` | Device events log |
-| `device` | Device registry with actuator state |
+| `device` | Device registry with actuator state and display order |
 
 ### API Service
 - **Purpose:** REST API for querying telemetry data and managing device state
@@ -533,11 +536,12 @@ flowchart TB
 |----------|--------|---------|
 | `/api/latest` | GET | Current sensor reading |
 | `/api/history` | GET | Historical data with bucketing (`deviceId` filter) |
-| `/api/relays` | GET/POST | Relay configuration |
-| `/api/relays/:id` | POST/PATCH/DELETE | Individual relay control |
+| `/api/devices` | GET | Registered devices |
+| `/api/devices/order` | PUT | Reorder devices (drag-and-drop) |
+| `/api/devices/:id/relays` | GET | Device relay states |
+| `/api/devices/:id/relays/:id` | POST/PATCH/DELETE | Individual relay control |
 | `/api/commands` | GET/POST | Command history |
 | `/api/events` | GET | Device events log |
-| `/api/devices` | GET | Registered devices |
 | `/api/chat/stream` | POST | Streaming chat (SSE) |
 | `/api/voice/*` | POST | Voice proxy to AI service |
 
@@ -560,7 +564,8 @@ Message Types:
   - Real-time metric cards with circular gauges
   - Time-series charts (Chart.js)
   - Relay control interface
-  - AI status indicator and activity feed
+  - Drag-and-drop device panel reordering (persisted)
+  - AI status indicator and activity feed (slide-out drawer)
   - Voice command input
   - Responsive design with container queries
 
@@ -736,7 +741,7 @@ All ESP32 devices use the `HomeHubClient` class to implement a consistent messag
 ```python
 from lib.home_hub import HomeHubClient
 
-hub = HomeHubClient(DEVICE_ID, LOCATION, mqtt_client)
+hub = HomeHubClient(DEVICE_ID, DEVICE_NAME, LOCATION, mqtt_client)
 
 # Register capabilities
 hub.register_sensor("temp1", "temperature", unit="celsius")

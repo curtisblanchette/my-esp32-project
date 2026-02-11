@@ -21,6 +21,7 @@ export function createRelaysRouter(): Router {
       const relays = actuators.map((actuator) => ({
         id: actuator.id,
         name: actuator.customName ?? actuator.name ?? actuator.id,
+        type: actuator.type ?? "switch",
         state: actuator.state ?? false,
         updatedAt: Date.now(),
         deviceId: actuator.deviceId,
@@ -50,6 +51,7 @@ export function createRelaysRouter(): Router {
       const relay = {
         id: actuator.id,
         name: actuator.customName ?? actuator.name ?? actuator.id,
+        type: actuator.type ?? "switch",
         state: actuator.state ?? false,
         deviceId: actuator.deviceId,
         location: actuator.location,
@@ -63,19 +65,14 @@ export function createRelaysRouter(): Router {
     }
   });
 
-  // POST /api/devices/:deviceId/relays/:id - Control relay state (toggle on/off)
+  // POST /api/devices/:deviceId/relays/:id - Control relay state (toggle on/off or pulse)
   router.post("/:id", (req: Request, res: Response) => {
     try {
-      const { state } = req.body;
-      if (typeof state !== "boolean") {
-        res.status(400).json({ ok: false, error: "state must be a boolean" });
-        return;
-      }
-
       const relayId = req.params.id as string;
+      const targetDeviceId = String(req.params.deviceId);
 
       // Find the actuator from device capabilities
-      const actuators = getDeviceActuators(String(req.params.deviceId));
+      const actuators = getDeviceActuators(targetDeviceId);
       const actuator = actuators.find((a) => a.id === relayId);
 
       if (!actuator) {
@@ -84,53 +81,98 @@ export function createRelaysRouter(): Router {
       }
 
       const relayName = actuator.customName ?? actuator.name ?? relayId;
-
-      const targetDeviceId = String(req.params.deviceId);
       const targetLocation = actuator.location;
 
-      // Send command to device via MQTT
-      const correlationId = publishCommand({
-        deviceId: targetDeviceId,
-        location: targetLocation,
-        target: relayId,
-        action: "set",
-        value: state,
-        source: "dashboard",
-        reason: `Relay ${relayName} set to ${state ? "ON" : "OFF"} via dashboard`,
-      });
-
-      if (!correlationId) {
-        res.status(503).json({ ok: false, error: "MQTT client not connected" });
-        return;
-      }
-
-      // Store command in database and broadcast
-      const command = insertCommand({
-        id: correlationId,
-        ts: Date.now(),
-        deviceId: targetDeviceId,
-        target: relayId,
-        action: "set",
-        value: state,
-        source: "dashboard",
-        reason: `Relay ${relayName} set to ${state ? "ON" : "OFF"} via dashboard`,
-      });
-      broadcastCommand(command);
-
-      // Optimistically update actuator state in device record
-      updateActuatorState(targetDeviceId, relayId, state);
-
-      res.json({
-        ok: true,
-        correlationId,
-        relay: {
-          id: relayId,
-          name: relayName,
-          state,
+      if (actuator.type === "momentary") {
+        // Momentary: send pulse action, no optimistic state update
+        const correlationId = publishCommand({
           deviceId: targetDeviceId,
           location: targetLocation,
-        },
-      });
+          target: relayId,
+          action: "pulse",
+          value: true,
+          source: "dashboard",
+          reason: `Relay ${relayName} pulsed via dashboard`,
+        });
+
+        if (!correlationId) {
+          res.status(503).json({ ok: false, error: "MQTT client not connected" });
+          return;
+        }
+
+        const command = insertCommand({
+          id: correlationId,
+          ts: Date.now(),
+          deviceId: targetDeviceId,
+          target: relayId,
+          action: "pulse",
+          value: true,
+          source: "dashboard",
+          reason: `Relay ${relayName} pulsed via dashboard`,
+        });
+        broadcastCommand(command);
+
+        res.json({
+          ok: true,
+          correlationId,
+          relay: {
+            id: relayId,
+            name: relayName,
+            type: "momentary",
+            state: false,
+            deviceId: targetDeviceId,
+            location: targetLocation,
+          },
+        });
+      } else {
+        // Switch: existing behavior
+        const { state } = req.body;
+        if (typeof state !== "boolean") {
+          res.status(400).json({ ok: false, error: "state must be a boolean" });
+          return;
+        }
+
+        const correlationId = publishCommand({
+          deviceId: targetDeviceId,
+          location: targetLocation,
+          target: relayId,
+          action: "set",
+          value: state,
+          source: "dashboard",
+          reason: `Relay ${relayName} set to ${state ? "ON" : "OFF"} via dashboard`,
+        });
+
+        if (!correlationId) {
+          res.status(503).json({ ok: false, error: "MQTT client not connected" });
+          return;
+        }
+
+        const command = insertCommand({
+          id: correlationId,
+          ts: Date.now(),
+          deviceId: targetDeviceId,
+          target: relayId,
+          action: "set",
+          value: state,
+          source: "dashboard",
+          reason: `Relay ${relayName} set to ${state ? "ON" : "OFF"} via dashboard`,
+        });
+        broadcastCommand(command);
+
+        updateActuatorState(targetDeviceId, relayId, state);
+
+        res.json({
+          ok: true,
+          correlationId,
+          relay: {
+            id: relayId,
+            name: relayName,
+            state,
+            deviceId: targetDeviceId,
+            location: targetLocation,
+          },
+        });
+      }
     } catch (err) {
       console.error("Error setting relay state", err);
       res.status(500).json({ ok: false, error: "Failed to set relay state" });

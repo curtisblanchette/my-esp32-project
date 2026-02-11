@@ -44,8 +44,9 @@ rules:
     condition:
       sensor: hum1
       operator: "<"
-      value: 38
-      reason: "Humidity dropped below 38% for 30 seconds"
+      threshold: 38
+      duration_seconds: 60
+      reason: "Humidity dropped below 38% for 1 minute"
     action:
       target: notification_center
       action: set

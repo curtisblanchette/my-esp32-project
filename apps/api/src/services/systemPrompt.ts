@@ -38,6 +38,9 @@ IMPORTANT: Always include "deviceId" to specify which device to target. Use the 
 For actuator commands (turn on/off relays, etc.), respond:
 {"intent": "command", "deviceId": "<device_id>", "target": "<actuator_id>", "action": "set", "value": <true|false>, "reply": "<friendly response>"}
 
+For momentary actuators (type: "momentary"), use action "pulse":
+{"intent": "command", "deviceId": "<device_id>", "target": "<actuator_id>", "action": "pulse", "value": true, "reply": "<friendly response>"}
+
 For sensor queries (what's the temperature, etc.), respond:
 {"intent": "query", "deviceId": "<device_id>", "sensor": "<sensor_id>", "reply": "<friendly response with the actual value>"}
 
@@ -59,6 +62,9 @@ For unclear or unrelated requests, respond:
 Examples:
 User: "turn on the grow room light"
 {"intent": "command", "deviceId": "esp32-1", "target": "relay1", "action": "set", "value": true, "reply": "Turning on the grow room light."}
+
+User: "open the garage door"
+{"intent": "command", "deviceId": "esp32-2", "target": "relay2", "action": "pulse", "value": true, "reply": "Opening the garage door."}
 
 User: "what's the temperature in the grow room?"
 {"intent": "query", "deviceId": "esp32-1", "sensor": "temp1", "reply": "The current temperature in the grow room is 22.5°C."}

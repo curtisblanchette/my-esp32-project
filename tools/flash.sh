@@ -135,23 +135,65 @@ flash_firmware() {
     esptool --port "$port" --baud 460800 write-flash -z 0x1000 "$FIRMWARE"
 
     echo -e "${GREEN}Firmware flashed successfully${NC}"
-    sleep 2
+
+    echo -e "${YELLOW}Waiting for MicroPython first boot...${NC}"
+    sleep 5
+
+    # Wait until mpremote can enter raw REPL
+    local retries=5
+    for i in $(seq 1 $retries); do
+        if mpremote connect "$port" exec "print('ok')" &>/dev/null; then
+            echo -e "${GREEN}Device ready${NC}"
+            return 0
+        fi
+        echo -e "  Waiting for REPL... (attempt $i/$retries)"
+        sleep 3
+    done
+
+    echo -e "${RED}Warning: Device not responding after firmware flash. Continuing anyway...${NC}"
+}
+
+wait_for_repl() {
+    local port="$1"
+    local retries=5
+
+    for i in $(seq 1 $retries); do
+        if mpremote connect "$port" exec "print('ok')" &>/dev/null; then
+            return 0
+        fi
+        echo -e "  Waiting for REPL... (attempt $i/$retries)"
+        sleep 2
+    done
+
+    return 1
 }
 
 upload_files() {
     local port="$1"
 
+    echo -e "${YELLOW}Interrupting running code...${NC}"
+    # Send Ctrl+C via serial to break out of any running loop, then reset
+    "$PROJECT_ROOT/.venv/bin/python3" -c "
+import serial, time
+s = serial.Serial('$port', 115200, timeout=1)
+s.write(b'\x03\x03')  # Ctrl+C twice to interrupt
+time.sleep(0.5)
+s.write(b'\x04')       # Ctrl+D to soft reset
+s.close()
+" 2>/dev/null || true
+    sleep 3
+
     echo -e "${YELLOW}Uploading device files...${NC}"
 
-    # Upload directories
-    mpremote connect "$port" fs cp -r "$DEVICE_DIR/lib" :
-    mpremote connect "$port" fs cp -r "$DEVICE_DIR/services" :
-
-    # Upload main files
-    mpremote connect "$port" fs cp "$DEVICE_DIR/boot.py" :
-    mpremote connect "$port" fs cp "$DEVICE_DIR/main.py" :
-    mpremote connect "$port" fs cp "$DEVICE_DIR/config.py" :
-    mpremote connect "$port" fs cp "$DEVICE_DIR/secrets.py" :
+    # Use 'resume' to skip soft-reset when entering raw REPL
+    # (device may hang during soft-reset if boot.py/main.py blocks)
+    mpremote connect "$port" resume \
+        fs cp -r "$DEVICE_DIR/lib" : + \
+        fs cp -r "$DEVICE_DIR/services" : + \
+        fs cp "$DEVICE_DIR/boot.py" : + \
+        fs cp "$DEVICE_DIR/main.py" : + \
+        fs cp "$DEVICE_DIR/config.py" : + \
+        fs cp "$DEVICE_DIR/secrets.py" :
 
     echo -e "${GREEN}Files uploaded successfully${NC}"
 }

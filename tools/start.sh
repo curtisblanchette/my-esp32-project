@@ -44,6 +44,8 @@ echo "AI service is ready"
 
 echo "Starting Docker services..."
 docker compose up -d
+docker compose logs -f &
+DOCKER_LOGS_PID=$!
 
 echo ""
 echo "All services started:"
@@ -58,6 +60,7 @@ echo "To stop: ./tools/stop.sh"
 cleanup() {
   echo ""
   echo "Shutting down services..."
+  kill $DOCKER_LOGS_PID 2>/dev/null
   kill $AI_PID 2>/dev/null
   kill $OLLAMA_PID 2>/dev/null
   docker compose down

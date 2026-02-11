@@ -1,6 +1,6 @@
 from machine import Pin
 
-class LED:
+class SWITCH:
     def __init__(self, pin):
         self.pin = Pin(pin, Pin.OUT)
 

@@ -1,4 +1,5 @@
-from lib.led import LED
+from lib.switch import SWITCH
+from lib.pulse import PULSE
 from lib.sensors.temp import TempSensor
 from lib.home_hub import HomeHubClient
 from lib import wifi
@@ -49,11 +50,18 @@ hub = HomeHubClient(
 hub.set_firmware_version(FIRMWARE_VERSION)
 
 # --- Initialize actuators ---
-actuator_pins = {}  # id -> LED instance
+actuator_pins = {}  # id -> SWITCH|PULSE
 for a in actuators:
-    pin = LED(a["pin"])
+    if a["type"] == "switch":
+        pin = SWITCH(a["pin"])
+    elif a["type"] == "momentary":
+        pin = PULSE(a["pin"])
+    else:
+        pin = SWITCH(a["pin"])
+
     actuator_pins[a["id"]] = pin
     hub.register_actuator(a["id"], a["type"], name=a["name"], state=bool(pin.value()))
+
 
 # --- Initialize sensors ---
 # Group by driver+pin to avoid duplicate hardware instances
@@ -93,13 +101,23 @@ if not sensors:
 if not actuators:
     print("[Config] No actuators configured")
 
+# Pending pulses: list of (target, correlation_id) waiting for tick() completion
+pending_pulses = []
+
 # Command handler
 def handle_command(correlation_id, target, action, value, ttl):
     print(f"[Command] target={target} action={action} value={value} ttl={ttl}")
 
     if target in actuator_pins:
         pin = actuator_pins[target]
-        if action == "set":
+        if action == "pulse":
+            if hasattr(pin, "is_busy") and pin.is_busy:
+                hub.publish_ack(correlation_id, "rejected", target, None, error="pulse in progress (debounce)")
+            else:
+                pin.pulse()
+                pending_pulses.append((target, correlation_id))
+                hub.publish_ack(correlation_id, "executed", target, True)
+        elif action == "set":
             if value:
                 pin.on()
             else:
@@ -168,6 +186,18 @@ while True:
                 mqtt.ping()
 
             next_telemetry = time.ticks_add(now, TELEMETRY_INTERVAL_MS)
+
+        # Check pending pulses for completion
+        completed = []
+        for i, (target, cid) in enumerate(pending_pulses):
+            pin = actuator_pins[target]
+            if pin.tick():
+                hub.publish_ack(cid, "executed", target, False)
+                completed.append(i)
+            elif not pin.is_busy:
+                completed.append(i)
+        for i in reversed(completed):
+            pending_pulses.pop(i)
 
         time.sleep(0.1)
 

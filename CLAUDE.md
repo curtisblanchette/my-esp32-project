@@ -287,6 +287,7 @@ Project-specific skills in `.claude/skills/`:
 | `/docs` | Update README.md and CLAUDE.md to reflect code changes |
 
 ## Preferences
+- You ALWAYS work on plans in /docs, not the global ~/.claude/plans directory. Your plan files must have descriptive names.
 - prefer `docker compose ...` over `docker-compose ...`
 - Use the latest installation instructions for libraries and packages. Ensure compatibility with system dependencies. Always prefer latest versions.
 

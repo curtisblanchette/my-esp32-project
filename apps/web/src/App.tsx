@@ -99,7 +99,7 @@ export function App(): React.ReactElement {
       setEvents(eventList);
     },
     onEventReceived: (event) => {
-      setEvents((prev) => [event, ...prev].slice(0, 20));
+      setEvents((prev) => [event, ...prev.filter((e) => e.id !== event.id)].slice(0, 20));
       // Sync relay state and update command status from command_ack events
       if (event.eventType === "command_ack" && event.data) {
         const { correlationId, status, actualValue } = event.data as {

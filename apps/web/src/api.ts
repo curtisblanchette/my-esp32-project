@@ -17,6 +17,7 @@ export type HistoryPoint = {
 export type RelayStatus = {
   id: string;
   name: string;
+  type?: string;
   state: boolean;
   updatedAt: number;
   deviceId?: string;
@@ -102,6 +103,16 @@ export async function setRelayState(deviceId: string, relayId: string, state: bo
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ state }),
+  });
+  const data = (await r.json()) as { ok: boolean };
+  return data.ok;
+}
+
+export async function pulseRelay(deviceId: string, relayId: string): Promise<boolean> {
+  const r = await fetch(`/api/devices/${deviceId}/relays/${relayId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pulse: true }),
   });
   const data = (await r.json()) as { ok: boolean };
   return data.ok;

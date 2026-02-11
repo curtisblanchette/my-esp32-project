@@ -142,6 +142,7 @@ export function broadcastDevices(): void {
 function buildRelayList(): Array<{
   id: string;
   name: string;
+  type: string;
   state: boolean;
   updatedAt: number;
   deviceId: string;
@@ -153,6 +154,7 @@ function buildRelayList(): Array<{
   return actuators.map((actuator) => ({
     id: actuator.id,
     name: actuator.customName ?? actuator.name ?? actuator.id,
+    type: actuator.type ?? "switch",
     state: actuator.state ?? false,
     updatedAt: Date.now(),
     deviceId: actuator.deviceId,

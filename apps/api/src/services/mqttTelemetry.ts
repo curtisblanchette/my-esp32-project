@@ -82,10 +82,6 @@ export function initMqttTelemetry(): void {
       "home/_registry/+/will",  // Device offline
     ];
 
-    // Also subscribe to legacy topic for backward compatibility
-    const legacyTopic = `${config.topicPrefix}/+/telemetry`;
-    topics.push(legacyTopic);
-
     mqttClient!.subscribe(topics, { qos: 0 }, (err) => {
       if (err) {
         console.error("MQTT subscribe error", err);
@@ -128,6 +124,7 @@ function isMessageEnvelope(json: unknown): json is MessageEnvelope {
 
 function handleEnvelopeMessage(topic: string, envelope: MessageEnvelope): void {
   const { type, deviceId, location, payload, ts } = envelope;
+  // console.info(`[MQTT] Received`, JSON.stringify(envelope));
 
   switch (type) {
     case "telemetry":
@@ -151,7 +148,7 @@ function handleEnvelopeMessage(topic: string, envelope: MessageEnvelope): void {
       break;
 
     default:
-      console.log(`[MQTT] Unknown message type: ${type}`);
+      console.warn(`[MQTT] Unknown message type: ${type}`);
   }
 }
 
@@ -161,6 +158,10 @@ function handleTelemetry(topic: string, deviceId: string, payload: unknown, ts: 
   const p = payload as { readings?: Array<{ id: string; value: number }> };
   if (!Array.isArray(p.readings)) return;
 
+  /** TODO bug: handleTelemetry() assumes sensors send `temp1`, `hum1`.
+    * This is problematic for new sensors types.
+    * Generalize this to better map reading values.
+    */
   // Extract temp and humidity from readings array
   let temp: number | undefined;
   let humidity: number | undefined;

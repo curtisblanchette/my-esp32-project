@@ -1,4 +1,6 @@
-# ESP32 MQTT AI Framework
+<p align="left">
+  <img src="wordmark.svg" alt="Mycelium" width="420" />
+</p>
 
 An open-source framework for building AI-powered IoT systems with ESP32 devices, MQTT messaging, and local LLM intelligence. Devices publish sensor telemetry and receive commands over MQTT, while a local AI orchestrator evaluates configurable rules and escalates to Ollama for autonomous decision-making.
 
@@ -15,10 +17,6 @@ AI operates on two independent paths that converge on MQTT as a shared command b
 - **HOT data** stored in [Redis](#redis) (48-hour retention)
 - **COLD data** aggregated in [SQLite](#sqlite) (historical trends)
 - **[Voice interface](#voice-commands)** with speech-to-text (Vosk) and text-to-speech (Kokoro)
-
-## Preview
-
-<video src="preview.mov" controls></video>
 
 ## Table of Contents
 - [Architecture Overview](#architecture-overview)

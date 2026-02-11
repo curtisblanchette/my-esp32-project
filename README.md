@@ -10,7 +10,7 @@ A monorepo for ESP32 IoT devices with AI-powered automation. These embedded devi
 
 ## Preview
 
-![img.png](img.png)
+<video src="preview.mov" controls></video>
 
 ## Table of Contents
 - [Architecture Overview](#architecture-overview)

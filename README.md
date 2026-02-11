@@ -1,12 +1,20 @@
-# My ESP32 Project
+# ESP32 MQTT AI Framework
 
-A monorepo for ESP32 IoT devices with AI-powered automation. These embedded devices collect telemetry data from sensors and can be controlled via MQTT commands. A local AI orchestrator monitors readings and automatically triggers actions based on configurable rules and LLM reasoning.
+An open-source framework for building AI-powered IoT systems with ESP32 devices, MQTT messaging, and local LLM intelligence. Devices publish sensor telemetry and receive commands over MQTT, while a local AI orchestrator evaluates configurable rules and escalates to Ollama for autonomous decision-making.
 
+On the device side, a configuration-driven MicroPython library handles the complexity of microcontroller development. Define your sensors and actuators in a JSON registry, and the framework automatically initializes hardware drivers (`SWITCH`, `PULSE`, `TempSensor`), manages WiFi connectivity, establishes MQTT sessions with birth/will lifecycle messages, and exposes a command handler — all without writing boilerplate. The `HomeHubClient` abstracts MQTT topic structure, correlation-based command acknowledgments, and telemetry publishing into a simple API, so adding a new device is just a registry entry and a flash.
+
+The same device capabilities that drive the firmware also drive the UI. When a device comes online, its birth message advertises its sensors and actuators to the API, which dynamically builds per-device panels in the React dashboard — complete with the correct controls for each actuator type (toggle switches, momentary pulse buttons), live sensor gauges, and historical charts. No frontend code changes are needed to support new devices; plug in an ESP32, define it in the registry, and it appears on the dashboard ready to control from anywhere on the local network via WebSocket, chat, or voice.
+
+AI operates on two independent paths that converge on MQTT as a shared command bus. A Python orchestrator subscribes to device telemetry and continuously evaluates a YAML rules engine — threshold conditions with duration guards and cooldown timers that prevent false positives and rapid toggling. When readings exceed rule boundaries (e.g., temperature above 25°C for 15 seconds), it publishes commands directly to devices without human intervention. For anomalies the rules can't handle, like rapid temperature swings exceeding 5°C per minute, the engine escalates to a local Ollama LLM for reasoning. Separately, the Node.js API interprets natural language from chat and voice through the same Ollama model, which returns structured JSON intents (command, query, history, analyze) that are executed identically regardless of input method. Devices don't know whether a command came from a rule, the LLM, or a user — they all arrive as the same MQTT message.
+
+- **Configuration-driven devices** — declare sensors and actuators in `registry.json`, flash, and go
+- **Dynamic dashboard** — device panels, controls, and charts generated from device capabilities
+- **Autonomous rules engine** — YAML-defined thresholds with duration guards, cooldowns, and LLM escalation
+- **Natural language control** — chat and voice commands interpreted by Ollama into structured intents
 - **HOT data** stored in Redis (48-hour retention)
 - **COLD data** aggregated in SQLite (historical trends)
-- **AI Orchestrator** runs locally with Ollama for intelligent automation
-- **React Dashboard** displays real-time sensor data, charts, and AI activity
-- **Voice Interface** with speech-to-text (Vosk) and text-to-speech (Kokoro)
+- **Voice interface** with speech-to-text (Vosk) and text-to-speech (Kokoro)
 
 ## Preview
 

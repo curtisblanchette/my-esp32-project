@@ -1,5 +1,5 @@
 <p align="left">
-  <img src="wordmark.svg" alt="Mycelium" width="420" />
+  <img src="header.png" alt="Mycelium" width="830" />
 </p>
 
 An open-source framework for building AI-powered IoT systems with ESP32 devices, MQTT messaging, and local LLM intelligence. Devices publish sensor telemetry and receive commands over MQTT, while a local AI orchestrator evaluates configurable rules and escalates to Ollama for autonomous decision-making.

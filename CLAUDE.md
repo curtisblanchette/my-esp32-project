@@ -145,6 +145,9 @@ flowchart TB
 - `GET /api/commands` - Command history
 - `GET /api/events` - Device event log
 
+**Observations**
+- `POST /api/observations` - Log human observation (`{deviceId, category, notes?}`)
+
 **Chat (NLP)**
 - `POST /api/chat` - Process natural language command
 - `POST /api/chat/stream` - Streaming chat response (SSE)
@@ -183,7 +186,7 @@ flowchart TB
 - `apps/cortex/src/services/forecaster.py` - Sensor forecasting: linear projection, EWMA smoothing, breach prediction, baseline deviation (Phase 3)
 - `apps/cortex/src/services/outcome_tracker.py` - Command outcome tracking, effectiveness scoring (Phase 2)
 - `apps/cortex/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
-- `apps/cortex/src/api/` - REST route handlers (telemetry, devices, relays, commands, events, chat, voice)
+- `apps/cortex/src/api/` - REST route handlers (telemetry, devices, relays, commands, events, observations, chat, voice)
 - `apps/cortex/config/rules.yaml` - Automation rules (threshold, trend, forecast, baseline deviation)
 - `apps/cortex/tests/conftest.py` - Test fixtures (sqlite_db, mock_redis, telemetry_factory)
 - `apps/cortex/tests/test_analysis.py` - Unit tests: stats, trends, rate-of-change
@@ -191,6 +194,7 @@ flowchart TB
 - `apps/cortex/tests/test_data_reader.py` - Unit tests: Redis+SQLite merge layer
 - `apps/cortex/tests/test_decision_engine.py` - Unit tests: rules, trend/time-of-day/forecast/baseline conditions
 - `apps/cortex/tests/test_forecaster.py` - Unit tests: linear forecast, EWMA, breach detection, baseline deviation
+- `apps/cortex/tests/test_observations.py` - Unit tests: observation endpoint validation, storage, broadcast
 - `apps/cortex/tests/test_outcome_tracker.py` - Unit tests: outcome tracking, scoring, lifecycle
 - `apps/cortex/tests/test_e2e_flow.py` - E2E tests: MQTT→API→Storage flow (requires running services)
 
@@ -201,7 +205,7 @@ flowchart TB
 - `apps/web/src/hooks/useOptimisticToggle.ts` - Toggle with ack timeout handling
 - `apps/web/src/hooks/useHistory.ts` - History fetching with deviceId filter
 - `apps/web/src/api.ts` - REST + WebSocket client functions
-- `apps/web/src/components/` - UI components (SensorCard, RelayControl, ChatInput, ActivityCenter)
+- `apps/web/src/components/` - UI components (SensorCard, RelayControl, ChatInput, ActivityCenter, ObservationForm)
 
 **Device:**
 - `device/main.py` - Sensor loop + command handling

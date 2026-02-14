@@ -16,6 +16,7 @@ AI operates on two independent paths that converge on MQTT as a shared command b
 - **[Predictive forecasting](#how-it-works)** — linear projection and EWMA smoothing to act before thresholds are breached
 - **[Baseline learning](#how-it-works)** — per-device, per-hour baselines for "unusual for this time of day" detection
 - **[Outcome tracking](#how-it-works)** — commands correlated with sensor effects, effectiveness scored and fed back to LLM
+- **Human observation logging** — log plant-health events sensors can't detect (mold, pests, wilting) via the Activity Center
 - **[Natural language control](#voice--chat-processing-pipeline)** — chat and voice commands interpreted by Ollama into structured intents
 - **HOT data** stored in [Redis](#redis) (48-hour retention)
 - **COLD data** aggregated in [SQLite](#sqlite) (historical trends)
@@ -527,6 +528,7 @@ flowchart TB
 | `/api/devices/:id/relays/:id` | POST/PATCH/DELETE | Individual relay control |
 | `/api/commands` | GET/POST | Command history |
 | `/api/events` | GET | Device events log |
+| `/api/observations` | POST | Log human observation (`{deviceId, category, notes?}`) |
 | `/api/chat/stream` | POST | Streaming chat (SSE) |
 | `/api/voice/transcribe` | POST | Audio → Text (Vosk STT) |
 | `/api/voice/synthesize` | POST | Text → Audio (Kokoro TTS) |
@@ -553,6 +555,7 @@ Message Types:
   - Relay control interface
   - Drag-and-drop device panel reordering (persisted)
   - AI status indicator and activity feed (slide-out drawer)
+  - Human observation logging (mold, pests, wilting, etc.) via Activity Center
   - Voice command input
   - Responsive design with container queries
 
@@ -728,7 +731,7 @@ cd apps/cortex
 pytest tests/ -m "not e2e" -v
 ```
 
-Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, forecast conditions, baseline deviation, cooldowns, YAML loading, LLM escalation), `forecaster.py` (linear forecast, EWMA, breach detection, baseline deviation), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries).
+Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, forecast conditions, baseline deviation, cooldowns, YAML loading, LLM escalation), `forecaster.py` (linear forecast, EWMA, breach detection, baseline deviation), `observations.py` (endpoint validation, storage, broadcast), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries).
 
 #### E2E Simulation Tests (requires running stack)
 ```bash

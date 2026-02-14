@@ -2,10 +2,11 @@ import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { DndContext, DragOverlay, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent, type DragStartEvent, type DragOverEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, rectSortingStrategy } from "@dnd-kit/sortable";
 
-import { fetchLatest, saveDeviceOrder, type LatestReading, type Command, type DeviceEvent, type Device, RelayStatus } from './api';
+import { fetchLatest, saveDeviceOrder, logObservation, type LatestReading, type Command, type DeviceEvent, type Device, type ObservationCategory, RelayStatus } from './api';
 import { DevicePanel } from "./components/DevicePanel";
 import { DeviceDiscoveryState } from "./components/DeviceDiscoveryState";
 import { ActivityCenter, type ErrorItem } from "./components/ActivityCenter";
+import { ObservationForm } from "./components/ObservationForm";
 import { ChatInput } from "./components/ChatInput";
 import { useWebSocket } from "./hooks/useWebSocket";
 
@@ -22,6 +23,7 @@ export function App(): React.ReactElement {
   const [errors, setErrors] = useState<ErrorItem[]>([]);
   const [wsRelayUpdates, setWsRelayUpdates] = useState<RelayStatus[] | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [showObservationForm, setShowObservationForm] = useState(false);
 
   const addError = useCallback((message: string, source?: string) => {
     const error: ErrorItem = {
@@ -254,7 +256,30 @@ export function App(): React.ReactElement {
       >
         <div className="flex items-center justify-between pt-5 px-5">
           <h2 className="text-sm font-medium opacity-80">Activity Center</h2>
+          <button
+            onClick={() => setShowObservationForm((prev) => !prev)}
+            className="p-1.5 rounded-lg border border-panel-border bg-panel/80 hover:bg-panel transition-colors cursor-pointer"
+            aria-label="Log observation"
+            title="Log observation"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+          </button>
         </div>
+        {showObservationForm && (
+          <div className="px-5 pt-3">
+            <ObservationForm
+              devices={devices}
+              onSubmit={async (obs) => {
+                await logObservation(obs);
+                setShowObservationForm(false);
+              }}
+              onCancel={() => setShowObservationForm(false)}
+            />
+          </div>
+        )}
         <div className="h-full pt-4 px-5 pb-24">
           {hasActivity ? (
             <ActivityCenter commands={commands} events={events} errors={errors} maxItems={20} />

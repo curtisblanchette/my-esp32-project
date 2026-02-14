@@ -28,6 +28,7 @@ from .api.devices import create_devices_router
 from .api.relays import create_relays_router
 from .api.commands import create_commands_router
 from .api.events import create_events_router
+from .api.observations import create_observations_router
 from .api.chat import create_chat_router
 from .api.voice import create_voice_router
 
@@ -137,6 +138,10 @@ def _mount_routes(app, sqlite, redis_client, ws_server, ollama, voice_service):
     app.include_router(
         create_events_router(sqlite),
         prefix="/api/events",
+    )
+    app.include_router(
+        create_observations_router(sqlite, ws_server),
+        prefix="/api/observations",
     )
     app.include_router(
         create_chat_router(sqlite, redis_for_routes, ws_server, ollama, data_reader),

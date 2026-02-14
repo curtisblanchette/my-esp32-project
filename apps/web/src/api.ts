@@ -176,6 +176,45 @@ export async function fetchEvents(args: {
   return Array.isArray(data.events) ? data.events : [];
 }
 
+// Observation categories for human-logged events
+export const OBSERVATION_CATEGORIES = [
+  // Plant health
+  { key: "mold", label: "Mold" },
+  { key: "powdery_mildew", label: "Powdery Mildew" },
+  { key: "pests", label: "Pests" },
+  { key: "needs_water", label: "Needs Water" },
+  { key: "overwatered", label: "Overwatered" },
+  { key: "nutrient_deficiency", label: "Nutrient Deficiency" },
+  { key: "wilting", label: "Wilting" },
+  { key: "leaf_damage", label: "Leaf Damage" },
+  { key: "root_rot", label: "Root Rot" },
+  { key: "harvest_ready", label: "Harvest Ready" },
+  // Equipment / maintenance
+  { key: "filter_changed", label: "Filter Changed" },
+  { key: "sensor_replaced", label: "Sensor Replaced" },
+  { key: "device_moved", label: "Device Moved" },
+  // Utility
+  { key: "high_bill_power", label: "High Power Bill" },
+  { key: "high_bill_gas", label: "High Gas Bill" },
+  // Catch-all
+  { key: "general", label: "General Note" },
+] as const;
+
+export type ObservationCategory = (typeof OBSERVATION_CATEGORIES)[number]["key"];
+
+export async function logObservation(args: {
+  deviceId: string;
+  category: ObservationCategory;
+  notes?: string;
+}): Promise<{ ok: boolean; event?: DeviceEvent }> {
+  const r = await fetch("/api/observations", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  });
+  return (await r.json()) as { ok: boolean; event?: DeviceEvent };
+}
+
 // Chat types
 export type ChatResponse = {
   ok: boolean;

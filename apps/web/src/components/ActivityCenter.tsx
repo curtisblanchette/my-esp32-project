@@ -1,5 +1,5 @@
 import React from "react";
-import type { Command, DeviceEvent } from "../api";
+import { OBSERVATION_CATEGORIES, type Command, type DeviceEvent } from "../api";
 
 export type ErrorItem = {
   id: string;
@@ -47,6 +47,12 @@ function getSourceBadge(source: string): { label: string; className: string } {
     return {
       label: "Device",
       className: "bg-green-500/20 text-green-400 border-green-500/30",
+    };
+  }
+  if (source === "human") {
+    return {
+      label: "Human",
+      className: "bg-amber-500/20 text-amber-400 border-amber-500/30",
     };
   }
   if (source === "error") {
@@ -147,6 +153,11 @@ export function ActivityCenter({ commands, events, errors = [], maxItems = 5 }: 
                 </svg>
               ) : item.type === "command" && item.status ? (
                 getStatusIcon(item.status)
+              ) : item.source === "human" ? (
+                <svg className="w-3.5 h-3.5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                </svg>
               ) : (
                 <div className="w-3.5 h-3.5 rounded-full bg-gray-500/50" />
               )}
@@ -180,6 +191,12 @@ function formatEventDescription(event: DeviceEvent): string {
       return `Device ${event.deviceId} came online`;
     case "device_offline":
       return `Device ${event.deviceId} went offline`;
+    case "observation": {
+      const category = event.data?.category as string | undefined;
+      const notes = event.data?.notes as string | undefined;
+      const label = OBSERVATION_CATEGORIES.find((c) => c.key === category)?.label ?? category ?? "Observation";
+      return notes ? `${label}: ${notes}` : label;
+    }
     default:
       return `${event.eventType} (${event.deviceId})`;
   }

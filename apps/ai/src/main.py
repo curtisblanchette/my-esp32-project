@@ -84,7 +84,7 @@ class Orchestrator:
             logger.warning("Ollama LLM is not available - running rules-only mode")
 
         # Start HTTP API server in background thread
-        self._start_http_server()
+        self._start_voice_api()
 
         # Initialize MQTT client
         self.mqtt = MqttService(
@@ -107,9 +107,9 @@ class Orchestrator:
 
         self.stop()
 
-    def _start_http_server(self):
-        """Start the HTTP API server in a background thread."""
-        from .api import app
+    def _start_voice_api(self):
+        """Start the Voice STT/TTS HTTP API server in a background thread."""
+        from .voice_api import app
 
         config = uvicorn.Config(
             app,

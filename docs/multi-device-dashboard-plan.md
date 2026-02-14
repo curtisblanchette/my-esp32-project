@@ -165,7 +165,7 @@ const { isConnected } = useWebSocket({
     </div>
 
     {/* Recent Activity sidebar - moves below on mobile */}
-    <RecentActivity ... />
+    <ActivityCenter ... />
   </div>
 </div>
 ```

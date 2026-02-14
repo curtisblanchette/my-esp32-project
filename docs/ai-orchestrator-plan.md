@@ -376,7 +376,7 @@ ollama ────┘
 
 **Files created:**
 - `apps/web/src/components/AIStatusIndicator.tsx` - Shows AI active/inactive status
-- `apps/web/src/components/RecentActivity.tsx` - Shows recent commands/events with source badges
+- `apps/web/src/components/ActivityCenter.tsx` - Shows recent commands/events with source badges
 
 **Files modified:**
 - `apps/web/src/api.ts` - Added fetchCommands(), fetchEvents(), Command/DeviceEvent types

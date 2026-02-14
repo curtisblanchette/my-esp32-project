@@ -5,7 +5,7 @@ import { SortableContext, arrayMove, rectSortingStrategy } from "@dnd-kit/sortab
 import { fetchLatest, saveDeviceOrder, type LatestReading, type Command, type DeviceEvent, type Device, RelayStatus } from './api';
 import { DevicePanel } from "./components/DevicePanel";
 import { DeviceDiscoveryState } from "./components/DeviceDiscoveryState";
-import { RecentActivity, type ErrorItem } from "./components/RecentActivity";
+import { ActivityCenter, type ErrorItem } from "./components/ActivityCenter";
 import { ChatInput } from "./components/ChatInput";
 import { useWebSocket } from "./hooks/useWebSocket";
 
@@ -178,10 +178,7 @@ export function App(): React.ReactElement {
     <div className="min-h-screen w-full flex flex-col">
       {/* Header */}
       <header className="sticky top-0 z-40 flex items-center justify-between px-4 py-3 md:px-6 backdrop-blur-[10px] bg-black/10 border-b border-panel-border">
-        <div className="flex items-center gap-2.5">
-          <img src="/favicon.svg" alt="Mycelium" className="w-11 h-11 opacity-80" />
-          <span className="text-sm font-medium tracking-wide opacity-60">Mycelium</span>
-        </div>
+        <span className="text-sm font-medium tracking-wide opacity-60">Mycelium</span>
         <button
           onClick={() => setDrawerOpen((o) => !o)}
           className="relative p-2.5 rounded-xl border border-panel-border bg-panel/80 hover:bg-panel transition-colors cursor-pointer"
@@ -256,11 +253,11 @@ export function App(): React.ReactElement {
         className={`fixed top-[53px] right-0 z-30 bottom-0 w-[340px] max-w-[85vw] backdrop-blur-[12px] bg-black/60 border-l border-panel-border transition-transform duration-300 ${drawerOpen ? "translate-x-0" : "translate-x-full"}`}
       >
         <div className="flex items-center justify-between pt-5 px-5">
-          <h2 className="text-sm font-medium opacity-80">Recent Activity</h2>
+          <h2 className="text-sm font-medium opacity-80">Activity Center</h2>
         </div>
         <div className="h-full pt-4 px-5 pb-24">
           {hasActivity ? (
-            <RecentActivity commands={commands} events={events} errors={errors} maxItems={20} />
+            <ActivityCenter commands={commands} events={events} errors={errors} maxItems={20} />
           ) : (
             <div className="text-sm opacity-60">No recent activity</div>
           )}
@@ -269,7 +266,7 @@ export function App(): React.ReactElement {
 
       {/* Chat input - pinned to bottom */}
       <div className="fixed bottom-0 left-0 right-0 z-40 backdrop-blur-md border-t border-panel-border p-4 bg-black/20 dark:bg-black/40">
-        <div className="max-w-[1400px] mx-auto px-3 md:px-5">
+        <div className="max-w-[1400px] mx-auto">
           <ChatInput />
         </div>
       </div>

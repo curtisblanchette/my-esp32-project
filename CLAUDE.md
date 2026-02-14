@@ -171,7 +171,7 @@ flowchart TB
 - `apps/web/src/hooks/useOptimisticToggle.ts` - Toggle with ack timeout handling
 - `apps/web/src/hooks/useHistory.ts` - History fetching with deviceId filter
 - `apps/web/src/api.ts` - REST + WebSocket client functions
-- `apps/web/src/components/` - UI components (SensorCard, RelayControl, ChatInput, RecentActivity)
+- `apps/web/src/components/` - UI components (SensorCard, RelayControl, ChatInput, ActivityCenter)
 
 **AI Orchestrator:**
 - `apps/ai/src/main.py` - Entry point + lifecycle
@@ -242,7 +242,7 @@ flowchart TB
 - `apps/web/src/components/SensorCard.tsx` - Combined temp/humidity gauges with charts
 - `apps/web/src/components/DevicePanel.tsx` - Per-device panel with drag-and-drop (via @dnd-kit)
 - `apps/web/src/components/ChatInput.tsx` - AI assistant input
-- `apps/web/src/components/RecentActivity.tsx` - Activity feed (slide-out drawer)
+- `apps/web/src/components/ActivityCenter.tsx` - Activity feed (slide-out drawer)
 
 **Drag-and-Drop Notes:**
 - Uses `@dnd-kit/core` + `@dnd-kit/sortable` for panel reordering

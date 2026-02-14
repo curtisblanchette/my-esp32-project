@@ -26,7 +26,7 @@ AI operates on two independent paths that converge on MQTT as a shared command b
 - [Quick Start](#quick-start)
 - [ESP32 Device Setup](#esp32-device-setup)
 - [Infrastructure](#infrastructure)
-- [AI Orchestrator](#ai-orchestrator)
+- [AI Prefrontal](#ai-prefrontal)
 - [Development](#development)
 - [Project Structure](#project-structure)
 - [Troubleshooting](#troubleshooting)
@@ -85,8 +85,10 @@ flowchart LR
 
     subgraph Processing["⚙️ Processing"]
         MQTT["MQTT<br/>Broker"]
-        Cortex["Cortex<br/>(FastAPI)"]
-        Rules["Rules<br/>Engine"]
+        subgraph Cortex["Cortex (FastAPI)"]
+            Prefrontal["Prefrontal"]
+            Rules["Rules<br/>Engine"]
+        end
         LLM["Ollama<br/>LLM"]
     end
 
@@ -101,19 +103,19 @@ flowchart LR
     end
 
     ESP32 -->|telemetry| MQTT
-    Voice -->|audio| Cortex
-    UI -->|REST| Cortex
+    Voice -->|audio| Prefrontal
+    UI -->|REST| Prefrontal
 
-    MQTT --> Cortex
-    MQTT --> Rules
-    Cortex --> Redis
-    Cortex --> SQLite
-    Rules --> LLM
+    MQTT --> Prefrontal
+    Prefrontal --> Rules
+    Prefrontal --> Redis
+    Prefrontal --> SQLite
+    Rules -->|escalate| LLM
     Rules --> Commands
 
-    Redis --> Cortex
-    SQLite --> Cortex
-    Cortex --> WS
+    Redis --> Prefrontal
+    SQLite --> Prefrontal
+    Prefrontal --> WS
     Commands --> MQTT
     MQTT --> ESP32
 ```
@@ -135,9 +137,12 @@ sequenceDiagram
     Note over D,WS: Telemetry Flow
     loop Every 5 seconds
         D->>M: home/{location}/{deviceId}/telemetry
-        M->>C: Store in Redis + SQLite, evaluate rules
+        M->>C: Store in Redis, evaluate rules
         C->>WS: {type: "latest", data: {...}}
     end
+
+    Note over C: Background Jobs (periodic)
+    C->>C: Aggregate Redis → SQLite
 
     Note over D,WS: Command Flow (User or AI)
     C->>M: home/{location}/{deviceId}/command
@@ -496,10 +501,10 @@ flowchart TB
 
 | Table | Purpose |
 |-------|---------|
-| `telemetry` | Historical sensor readings |
-| `command` | Command history with status |
-| `event` | Device events log |
-| `device` | Device registry with actuator state and display order |
+| `sensor_readings` | Historical sensor readings |
+| `commands` | Command history with status |
+| `events` | Device events log |
+| `devices` | Device registry with actuator state and display order |
 | `cortex_baselines` | Per-device, per-sensor, per-hour learned baselines (Welford's algorithm) |
 | `cortex_outcomes` | Command effectiveness scores with pre/post sensor snapshots (Phase 2) |
 
@@ -550,7 +555,7 @@ Message Types:
   - Voice command input
   - Responsive design with container queries
 
-## AI Orchestrator
+## AI Prefrontal
 
 Cortex includes an autonomous decision engine that monitors sensor readings and automatically controls devices using a hybrid rules + LLM approach.
 
@@ -560,17 +565,17 @@ Cortex includes an autonomous decision engine that monitors sensor readings and 
 flowchart TB
     Start([Telemetry Received]) --> Context[Build Context<br/>trends + baselines<br/>cached 30s]
     Context --> Rules{Rules Match?<br/>threshold + trend<br/>+ time-of-day}
-    Rules -->|Yes| Execute[Execute Command]
+    Rules -->|Yes| Execute[Execute Command<br/>+ OutcomeTracker pre-snapshot]
     Rules -->|No| Escalate{LLM<br/>Escalation<br/>Trigger?}
-    Escalate -->|No| Baseline[Update Baselines]
-    Escalate -->|Yes| LLM[Ollama Analysis<br/>enriched with trends<br/>+ baseline deviations]
+    Escalate -->|Yes| LLM[Ollama Analysis<br/>enriched with trends<br/>+ baseline deviations<br/>+ past effectiveness]
+    Escalate -->|No| Post[Post-processing]
     LLM --> Decision{Command<br/>Generated?}
     Decision -->|Yes| Execute
-    Decision -->|No| Baseline
+    Decision -->|No| Post
     Execute --> Publish[Publish to MQTT]
-    Publish --> Track[Track in Recent Commands]
-    Track --> Outcome[OutcomeTracker<br/>pre-snapshot + intervals]
-    Outcome --> Baseline
+    Publish --> Post
+    Post --> Outcomes[Check Pending Outcomes<br/>score at 1m/5m/10m intervals]
+    Outcomes --> Baseline[Update Baselines]
     Baseline --> End([Done])
 ```
 
@@ -661,13 +666,15 @@ sequenceDiagram
     participant WS as Dashboard
 
     C->>C: Rule triggered or LLM decision
+    C->>C: OutcomeTracker: pre-snapshot sensors
     C->>M: Publish command<br/>home/{loc}/{id}/command
     M->>D: Forward command
     D->>D: Execute (toggle relay)
     D->>M: Publish ack<br/>home/{loc}/{id}/ack
     M->>C: Ack received
-    C->>C: Update SQLite
+    C->>C: Update SQLite + OutcomeTracker.handle_ack()
     C->>WS: Broadcast relay update
+    Note over C: OutcomeTracker checks at 1m/5m/10m<br/>scores effectiveness → SQLite
 ```
 
 ### Voice Commands

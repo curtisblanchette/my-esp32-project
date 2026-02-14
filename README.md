@@ -701,6 +701,30 @@ The start script handles Ollama, Docker infrastructure, and Cortex:
 ./tools/start.sh
 ```
 
+### Testing
+
+The Cortex backend includes unit tests and end-to-end simulation tests.
+
+#### Unit Tests (no external services needed)
+```bash
+cd apps/cortex
+pytest tests/ -m "not e2e" -v
+```
+
+Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, cooldowns, YAML loading, LLM escalation).
+
+#### E2E Simulation Tests (requires running stack)
+```bash
+# Start services first
+docker compose up -d mosquitto redis
+cd apps/cortex && python -m src.main &
+
+# Run e2e tests
+pytest tests/ -m e2e -v
+```
+
+Exercises: device birth via MQTT, telemetry ingestion, relay control, command ACK, API endpoint regression, baseline accumulation.
+
 ### Working with Device Code
 
 The `./device/` directory contains MicroPython code:

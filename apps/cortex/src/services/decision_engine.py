@@ -1,6 +1,7 @@
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from pathlib import Path
 
@@ -127,12 +128,15 @@ class DecisionEngine:
             condition_met = self._check_condition(reading.value, rule.condition)
 
             # Check trend condition (Phase 1)
-            if condition_met and rule.condition.trend and context:
-                trend_data = context.get("trends", {}).get(rule.condition.sensor)
-                if trend_data:
-                    condition_met = trend_data.get("trend") == rule.condition.trend
+            if condition_met and rule.condition.trend:
+                if not context:
+                    condition_met = False  # Trend required but no context available
                 else:
-                    condition_met = False  # No trend data available
+                    trend_data = context.get("trends", {}).get(rule.condition.sensor)
+                    if trend_data:
+                        condition_met = trend_data.get("trend") == rule.condition.trend
+                    else:
+                        condition_met = False  # No trend data available
 
             # Check time-of-day condition (Phase 1)
             if condition_met and rule.condition.time_of_day:
@@ -203,7 +207,6 @@ class DecisionEngine:
 
     def _check_time_of_day(self, time_range: dict) -> bool:
         """Check if current time is within the specified range."""
-        from datetime import datetime
         now = datetime.now()
         current_minutes = now.hour * 60 + now.minute
 

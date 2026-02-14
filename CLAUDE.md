@@ -12,6 +12,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run dev` - Vite dev server on port 5173
 - `npm run build` - Production build
 
+**Testing (`apps/cortex`)**
+- `pytest tests/ -m "not e2e"` - Run unit tests (no external services needed)
+- `pytest tests/ -m e2e` - Run e2e tests (requires Mosquitto + Redis + Cortex running)
+- `pytest tests/ -v` - Run all tests with verbose output
+
 **Device Tools**
 - `./tools/flash.sh <device-id>` - Upload MicroPython code to ESP32 via mpremote
 - `./tools/flash.sh <device-id> --erase` - Full flash with MicroPython firmware
@@ -161,6 +166,12 @@ flowchart TB
 - `apps/cortex/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
 - `apps/cortex/src/api/` - REST route handlers (telemetry, devices, relays, commands, events, chat, voice)
 - `apps/cortex/config/rules.yaml` - Automation rules
+- `apps/cortex/tests/conftest.py` - Test fixtures (sqlite_db, mock_redis, telemetry_factory)
+- `apps/cortex/tests/test_analysis.py` - Unit tests: stats, trends, rate-of-change
+- `apps/cortex/tests/test_cortex_memory.py` - Unit tests: baseline tracking (Welford's)
+- `apps/cortex/tests/test_data_reader.py` - Unit tests: Redis+SQLite merge layer
+- `apps/cortex/tests/test_decision_engine.py` - Unit tests: rules, trend/time-of-day conditions
+- `apps/cortex/tests/test_e2e_flow.py` - E2E tests: MQTT→API→Storage flow (requires running services)
 
 **Web:**
 - `apps/web/src/App.tsx` - Main dashboard component

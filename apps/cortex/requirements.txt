@@ -12,3 +12,6 @@ numpy>=1.26.0
 soundfile>=0.12.1
 redis>=5.0.0
 websockets>=13.0
+
+# Testing
+pytest>=8.0.0

@@ -118,4 +118,60 @@ def create_telemetry_router(sqlite, redis_client, ws_server) -> APIRouter:
         except Exception as e:
             return {"ok": False, "error": f"Failed to query history: {e}"}
 
+    @r.get("/outcomes")
+    async def get_outcomes(
+        deviceId: str | None = Query(None),
+        target: str | None = Query(None),
+        sinceMs: int | None = Query(None),
+        limit: int = Query(50),
+    ):
+        try:
+            import json as _json
+            db = sqlite._get_db()
+
+            sql = ("SELECT correlation_id, device_id, target, action, value, reason, "
+                   "command_ts, ack_status, target_metric, desired_direction, "
+                   "pre_value, post_1m, post_5m, post_10m, effectiveness, scored_at "
+                   "FROM cortex_outcomes WHERE 1=1")
+            params: list[Any] = []
+
+            if deviceId:
+                sql += " AND device_id = ?"
+                params.append(deviceId)
+            if target:
+                sql += " AND target = ?"
+                params.append(target)
+            if sinceMs:
+                sql += " AND command_ts >= ?"
+                params.append(sinceMs)
+
+            sql += " ORDER BY command_ts DESC LIMIT ?"
+            params.append(limit)
+
+            cursor = db.execute(sql, params)
+            outcomes = [
+                {
+                    "correlationId": row["correlation_id"],
+                    "deviceId": row["device_id"],
+                    "target": row["target"],
+                    "action": row["action"],
+                    "value": _json.loads(row["value"]) if row["value"] else None,
+                    "reason": row["reason"],
+                    "commandTs": row["command_ts"],
+                    "ackStatus": row["ack_status"],
+                    "targetMetric": row["target_metric"],
+                    "desiredDirection": row["desired_direction"],
+                    "preValue": row["pre_value"],
+                    "post1m": row["post_1m"],
+                    "post5m": row["post_5m"],
+                    "post10m": row["post_10m"],
+                    "effectiveness": row["effectiveness"],
+                    "scoredAt": row["scored_at"],
+                }
+                for row in cursor.fetchall()
+            ]
+            return {"ok": True, "outcomes": outcomes}
+        except Exception as e:
+            return {"ok": False, "error": f"Failed to query outcomes: {e}"}
+
     return r

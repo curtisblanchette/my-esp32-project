@@ -141,6 +141,22 @@ class OllamaClient:
                     status = "normal" if abs(deviation) < 1.5 else "unusual" if abs(deviation) < 2.5 else "abnormal"
                     baseline_str += f"\n  - {sensor}: baseline={avg:.1f}, deviation={deviation:+.1f}σ ({status}, {samples} samples)"
 
+        # Format effectiveness data (Phase 2)
+        effectiveness_str = ""
+        effectiveness = context.pop("_effectiveness", None) if context else None
+        if effectiveness:
+            effectiveness_str = "\nPast command effectiveness:"
+            for target, data in effectiveness.items():
+                samples = data.get("sample_count", 0)
+                avg_delta = data.get("avg_delta_5m", 0)
+                pct = int(data.get("success_rate", 0) * 100)
+                metric = data.get("metric", "temperature")
+                unit = "°C" if metric == "temperature" else "%"
+                effectiveness_str += (
+                    f"\n  - {target}: avg {avg_delta:+.1f}{unit} at 5min "
+                    f"({pct}% effective, {samples} samples)"
+                )
+
         # Format sensor state context
         context_str = ""
         if context:
@@ -162,7 +178,7 @@ class OllamaClient:
 
         prompt = f"""Current sensor readings from {telemetry.device_id} at {telemetry.location}:
 {readings_str}
-{trend_str}{baseline_str}{f"\n\nSensor states:{context_str}" if context_str else ""}{commands_str}
+{trend_str}{baseline_str}{effectiveness_str}{f"\n\nSensor states:{context_str}" if context_str else ""}{commands_str}
 
 Based on these readings, should any action be taken? Consider:
 1. Is the temperature comfortable (18-26°C is typical comfort range)?

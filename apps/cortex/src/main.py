@@ -55,6 +55,9 @@ class Orchestrator:
         self._context_cache: dict | None = None
         self._context_cache_ts: float = 0.0
         self._context_cache_ttl: float = 30.0
+        # Phase 2: outcome tracking
+        self._outcome_tracker = None
+        self._latest_telemetry: TelemetryMessage | None = None
 
     @property
     def running(self) -> bool:
@@ -121,6 +124,11 @@ class Orchestrator:
         self._data_reader = DataReader(redis_client, sqlite)
         self._memory = CortexMemory(sqlite)
         logger.info("Phase 1: DataReader and CortexMemory initialized")
+
+        # Phase 2: Initialize OutcomeTracker
+        from .services.outcome_tracker import OutcomeTracker
+        self._outcome_tracker = OutcomeTracker(sqlite, self._data_reader)
+        logger.info("Phase 2: OutcomeTracker initialized")
 
         # Initialize MQTT with storage + WebSocket + decision engine
         self.mqtt = MqttService(
@@ -207,6 +215,9 @@ class Orchestrator:
         """Decision engine: evaluate rules with trend context."""
         logger.debug(f"Evaluating rules for {telemetry.device_id}")
 
+        # Phase 2: store latest telemetry for outcome pre-snapshots
+        self._latest_telemetry = telemetry
+
         # Build or reuse cached context (Phase 1)
         context = self._build_context(telemetry.device_id)
 
@@ -224,6 +235,7 @@ class Orchestrator:
                 if context:
                     enriched["_trends"] = context.get("trends", {})
                     enriched["_baselines"] = context.get("baselines", {})
+                    enriched["_effectiveness"] = context.get("effectiveness", {})
                 self.ollama.analyze_async(
                     telemetry,
                     enriched,
@@ -233,6 +245,15 @@ class Orchestrator:
 
         # Update baselines (cheap, incremental)
         self._update_baselines(telemetry)
+
+        # Phase 2: check pending outcomes for completed intervals
+        if self._outcome_tracker:
+            completed = self._outcome_tracker.check_outcomes()
+            for outcome in completed:
+                logger.info(
+                    f"Outcome scored: {outcome.correlation_id} "
+                    f"effectiveness={outcome.effectiveness:+.2f}"
+                )
 
     def _build_context(self, device_id: str) -> dict | None:
         """Build decision context from recent history. Cached for 30 seconds."""
@@ -290,9 +311,21 @@ class Orchestrator:
                             "deviation": deviation,
                         }
 
+            # Phase 2: effectiveness summaries
+            effectiveness = {}
+            if self._outcome_tracker:
+                devices = self._shared.state.devices
+                device = devices.get(device_id, {})
+                targets = ["relay1"]  # extensible when more actuators are known
+                for target in targets:
+                    summary = self._outcome_tracker.get_effectiveness_summary(device_id, target)
+                    if summary:
+                        effectiveness[target] = summary
+
             self._context_cache = {
                 "trends": trends,
                 "baselines": baselines,
+                "effectiveness": effectiveness,
                 "built_at": now,
             }
             self._context_cache_ts = now
@@ -343,6 +376,10 @@ class Orchestrator:
         correlation_id = self.mqtt.publish_command(command)
         logger.info(f"Executed command {correlation_id}: {command.target} = {command.value}")
 
+        # Phase 2: track outcome with pre-snapshot
+        if self._outcome_tracker and self._latest_telemetry:
+            self._outcome_tracker.track_command(command, self._latest_telemetry)
+
         self.recent_commands.append({
             "correlation_id": correlation_id,
             "target": command.target,
@@ -361,6 +398,10 @@ class Orchestrator:
         logger.info(f"Command {ack.correlation_id} {ack.status}: {ack.target} = {ack.actual_value}")
         if ack.status != "executed":
             logger.warning(f"Command failed: {ack.error}")
+
+        # Phase 2: forward ack to outcome tracker
+        if self._outcome_tracker:
+            self._outcome_tracker.handle_ack(ack)
 
     def _handle_device_birth(self, device_id: str, location: str, capabilities: dict):
         self.devices[device_id] = {

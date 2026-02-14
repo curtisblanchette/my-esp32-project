@@ -51,6 +51,13 @@ ESP32 (MicroPython) → MQTT → Cortex (Python/FastAPI) → Redis (HOT) + SQLit
 - Orchestrator caches context for 30 seconds, passes to rules engine and LLM escalation
 - Rules support `trend` ("rising"/"falling"/"stable") and `time_of_day` conditions
 
+**Outcome Tracking (Phase 2):**
+- `OutcomeTracker` correlates commands with their measurable sensor effects
+- Lifecycle: `track_command` (pre-snapshot) → `handle_ack` → `check_outcomes` (at 1m/5m/10m) → score → store
+- Effectiveness scored from -1.0 (made it worse) to +1.0 (strong improvement), weighted across intervals (20%/50%/30%)
+- Target metric and desired direction inferred from command `reason` string keywords
+- Completed outcomes persist to `cortex_outcomes` table; effectiveness summaries feed into LLM prompts
+
 **Voice & Chat Architecture:**
 
 Both text chat and voice commands funnel through a shared `execute_intent()` function, ensuring all intents are handled identically.
@@ -97,6 +104,7 @@ flowchart TB
 - **SQLite** - Aggregated historical data (COLD data)
 - `DataReader` merges both sources for queries and decision context
 - `cortex_baselines` table stores learned per-hour sensor baselines
+- `cortex_outcomes` table stores command effectiveness scores (Phase 2)
 
 **MQTT Topics:**
 - `home/{location}/{deviceId}/telemetry` - Sensor readings (Device → Server)
@@ -107,9 +115,10 @@ flowchart TB
 
 ## API Endpoints
 
-**Telemetry**
+**Telemetry & Analysis**
 - `GET /api/latest` - Current sensor reading
 - `GET /api/history` - Historical data with optional bucketing (`sinceMs`, `untilMs`, `bucketMs`, `deviceId`)
+- `GET /api/outcomes` - Command effectiveness records (`deviceId`, `target`, `sinceMs`, `limit`)
 
 **Devices**
 - `GET /api/devices` - Registered devices
@@ -163,6 +172,7 @@ flowchart TB
 - `apps/cortex/src/services/cortex_memory.py` - Per-device hourly baseline tracking (Welford's algorithm)
 - `apps/cortex/src/services/background_jobs.py` - Aggregation (Redis→SQLite) + command expiration
 - `apps/cortex/src/services/decision_engine.py` - Rules engine with trend/time-of-day conditions + LLM escalation
+- `apps/cortex/src/services/outcome_tracker.py` - Command outcome tracking, effectiveness scoring (Phase 2)
 - `apps/cortex/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
 - `apps/cortex/src/api/` - REST route handlers (telemetry, devices, relays, commands, events, chat, voice)
 - `apps/cortex/config/rules.yaml` - Automation rules
@@ -171,6 +181,7 @@ flowchart TB
 - `apps/cortex/tests/test_cortex_memory.py` - Unit tests: baseline tracking (Welford's)
 - `apps/cortex/tests/test_data_reader.py` - Unit tests: Redis+SQLite merge layer
 - `apps/cortex/tests/test_decision_engine.py` - Unit tests: rules, trend/time-of-day conditions
+- `apps/cortex/tests/test_outcome_tracker.py` - Unit tests: outcome tracking, scoring, lifecycle
 - `apps/cortex/tests/test_e2e_flow.py` - E2E tests: MQTT→API→Storage flow (requires running services)
 
 **Web:**

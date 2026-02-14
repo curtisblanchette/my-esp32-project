@@ -14,6 +14,7 @@ AI operates on two independent paths that converge on MQTT as a shared command b
 - **[Dynamic dashboard](#web-dashboard)** — device panels, controls, and charts generated from device capabilities
 - **[Autonomous rules engine](#ai-orchestrator)** — YAML-defined thresholds with trend conditions, time-of-day windows, duration guards, cooldowns, and LLM escalation
 - **[Baseline learning](#how-it-works)** — per-device, per-hour baselines for "unusual for this time of day" detection
+- **[Outcome tracking](#how-it-works)** — commands correlated with sensor effects, effectiveness scored and fed back to LLM
 - **[Natural language control](#voice--chat-processing-pipeline)** — chat and voice commands interpreted by Ollama into structured intents
 - **HOT data** stored in [Redis](#redis) (48-hour retention)
 - **COLD data** aggregated in [SQLite](#sqlite) (historical trends)
@@ -500,6 +501,7 @@ flowchart TB
 | `event` | Device events log |
 | `device` | Device registry with actuator state and display order |
 | `cortex_baselines` | Per-device, per-sensor, per-hour learned baselines (Welford's algorithm) |
+| `cortex_outcomes` | Command effectiveness scores with pre/post sensor snapshots (Phase 2) |
 
 ### Cortex Backend
 - **Purpose:** Unified backend — REST API, WebSocket, MQTT client, rules engine, voice
@@ -512,6 +514,7 @@ flowchart TB
 |----------|--------|---------|
 | `/api/latest` | GET | Current sensor reading |
 | `/api/history` | GET | Historical data with bucketing (`deviceId` filter) |
+| `/api/outcomes` | GET | Command effectiveness records (`deviceId`, `target` filters) |
 | `/api/devices` | GET | Registered devices |
 | `/api/devices/order` | PUT | Reorder devices (drag-and-drop) |
 | `/api/devices/:id/relays` | GET | Device relay states |
@@ -566,7 +569,8 @@ flowchart TB
     Decision -->|No| Baseline
     Execute --> Publish[Publish to MQTT]
     Publish --> Track[Track in Recent Commands]
-    Track --> Baseline
+    Track --> Outcome[OutcomeTracker<br/>pre-snapshot + intervals]
+    Outcome --> Baseline
     Baseline --> End([Done])
 ```
 
@@ -574,10 +578,11 @@ flowchart TB
 
 1. **Context Building** - Each telemetry message triggers a context build (cached 30s): `DataReader` merges Redis+SQLite readings, `analysis.py` computes trend direction and rate-of-change, `CortexMemory` provides hourly baselines for deviation detection
 2. **Rules Engine** - Threshold-based rules with duration/cooldown support, extended with trend conditions (`rising`/`falling`/`stable`) and time-of-day windows
-3. **LLM Escalation** - Complex patterns escalate to Ollama with enriched context (trend analysis, baseline sigma deviations)
-4. **Baseline Learning** - Per-device, per-sensor, per-hour baselines accumulate incrementally via Welford's online algorithm, enabling "unusual for this time of day" detection
-5. **Direct MQTT** - AI subscribes to telemetry and publishes commands directly
-6. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
+3. **LLM Escalation** - Complex patterns escalate to Ollama with enriched context (trend analysis, baseline sigma deviations, past command effectiveness)
+4. **Outcome Tracking** - After a command fires, `OutcomeTracker` snapshots sensor state, checks at 1m/5m/10m intervals, and scores effectiveness (-1.0 to +1.0). Results persist to SQLite and feed back into LLM prompts
+5. **Baseline Learning** - Per-device, per-sensor, per-hour baselines accumulate incrementally via Welford's online algorithm, enabling "unusual for this time of day" detection
+6. **Direct MQTT** - AI subscribes to telemetry and publishes commands directly
+7. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
 
 ### Configuration
 
@@ -711,7 +716,7 @@ cd apps/cortex
 pytest tests/ -m "not e2e" -v
 ```
 
-Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, cooldowns, YAML loading, LLM escalation).
+Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, cooldowns, YAML loading, LLM escalation), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries).
 
 #### E2E Simulation Tests (requires running stack)
 ```bash

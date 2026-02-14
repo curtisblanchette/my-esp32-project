@@ -302,5 +302,13 @@ Project-specific skills in `.claude/skills/`:
 - E2E tests (`@pytest.mark.e2e`) are for integration scenarios that require running services. Keep unit tests fast and isolated with mocks.
 - Name test classes `Test<Module>` and methods `test_<behavior_under_test>`. Group related tests in the same class.
 
+## Autonomous Plan Execution
+When working through a multi-phase plan (e.g., `docs/mycelium-cortex-plan.md`), you may continue executing subsequent phases without waiting for human approval **provided all of the following are true**:
+1. All unit tests pass (`pytest tests/ -m "not e2e"`) with zero regressions
+2. Documentation (README.md, CLAUDE.md) has been audited and updated via `/docs`
+3. You are not deviating from the approved plan — no architectural changes, no new dependencies, no scope creep
+
+If any of these conditions fail, stop and ask before proceeding.
+
 ## Post-Implementation Workflow
 After completing a plan or significant implementation work, run `/docs` to update README.md and CLAUDE.md. This ensures documentation stays in sync with code changes.

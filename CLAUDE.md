@@ -284,6 +284,12 @@ Project-specific skills in `.claude/skills/`:
 - You ALWAYS work on plans in /docs, not the global ~/.claude/plans directory. Your plan files must have descriptive names.
 - prefer `docker compose ...` over `docker-compose ...`
 - Use the latest installation instructions for libraries and packages. Ensure compatibility with system dependencies. Always prefer latest versions.
+- All code additions must include tests. Unit tests go in `apps/cortex/tests/` using pytest. Run `pytest tests/ -m "not e2e"` to verify before committing.
+- Tests must cover both happy paths and edge cases (empty inputs, boundary values, error conditions).
+- Use the shared fixtures from `conftest.py` (`sqlite_db`, `mock_redis`, `telemetry_factory`) — don't reinvent them.
+- When modifying existing code, run the full unit test suite first to establish a baseline, then again after changes to catch regressions.
+- E2E tests (`@pytest.mark.e2e`) are for integration scenarios that require running services. Keep unit tests fast and isolated with mocks.
+- Name test classes `Test<Module>` and methods `test_<behavior_under_test>`. Group related tests in the same class.
 
 ## Post-Implementation Workflow
 After completing a plan or significant implementation work, run `/docs` to update README.md and CLAUDE.md. This ensures documentation stays in sync with code changes.

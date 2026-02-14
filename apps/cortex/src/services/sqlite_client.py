@@ -832,6 +832,99 @@ class SqliteClient:
 
         return actuators
 
+    # ── Suggestions (Rule Advisor) ──────────────────────────────────
+
+    def insert_suggestion(
+        self,
+        id: str,
+        rule_name: str,
+        field: str,
+        current_value: str,
+        suggested_value: str,
+        reason: str,
+        confidence: float,
+        outcome_sample_count: int = 0,
+        observation_context: str | None = None,
+    ) -> dict:
+        db = self._get_db()
+        now = int(time.time() * 1000)
+        db.execute(
+            "INSERT INTO cortex_suggestions "
+            "(id, created_at, rule_name, field, current_value, suggested_value, "
+            "reason, confidence, status, outcome_sample_count, observation_context) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (id, now, rule_name, field, current_value, suggested_value,
+             reason, confidence, outcome_sample_count, observation_context),
+        )
+        db.commit()
+        return self._suggestion_to_dict(db.execute(
+            "SELECT * FROM cortex_suggestions WHERE id = ?", (id,)
+        ).fetchone())
+
+    def get_suggestions(
+        self,
+        status: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        db = self._get_db()
+        if status:
+            cursor = db.execute(
+                "SELECT * FROM cortex_suggestions WHERE status = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (status, limit),
+            )
+        else:
+            cursor = db.execute(
+                "SELECT * FROM cortex_suggestions ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            )
+        return [self._suggestion_to_dict(row) for row in cursor.fetchall()]
+
+    def update_suggestion_status(self, id: str, status: str) -> bool:
+        db = self._get_db()
+        now = int(time.time() * 1000)
+        cursor = db.execute(
+            "UPDATE cortex_suggestions SET status = ?, resolved_at = ? WHERE id = ?",
+            (status, now, id),
+        )
+        db.commit()
+        return cursor.rowcount > 0
+
+    def get_suggestion(self, id: str) -> dict | None:
+        db = self._get_db()
+        row = db.execute(
+            "SELECT * FROM cortex_suggestions WHERE id = ?", (id,)
+        ).fetchone()
+        if not row:
+            return None
+        return self._suggestion_to_dict(row)
+
+    def _suggestion_to_dict(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "createdAt": row["created_at"],
+            "ruleName": row["rule_name"],
+            "field": row["field"],
+            "currentValue": row["current_value"],
+            "suggestedValue": row["suggested_value"],
+            "reason": row["reason"],
+            "confidence": row["confidence"],
+            "status": row["status"],
+            "resolvedAt": row["resolved_at"],
+            "outcomeSampleCount": row["outcome_sample_count"],
+            "observationContext": row["observation_context"],
+        }
+
+    def count_suggestions_by_status(self) -> dict[str, int]:
+        db = self._get_db()
+        cursor = db.execute(
+            "SELECT status, COUNT(*) as cnt FROM cortex_suggestions GROUP BY status"
+        )
+        counts: dict[str, int] = {}
+        for row in cursor.fetchall():
+            counts[row["status"]] = row["cnt"]
+        return counts
+
     def _row_to_device(self, row: sqlite3.Row) -> Device:
         caps_raw = json.loads(row["capabilities"]) if row["capabilities"] else {"sensors": [], "actuators": []}
         actuator_names_raw = json.loads(row["actuator_names"]) if row["actuator_names"] else {}

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { DndContext, DragOverlay, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent, type DragStartEvent, type DragOverEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, rectSortingStrategy } from "@dnd-kit/sortable";
 
-import { fetchLatest, saveDeviceOrder, logObservation, type LatestReading, type Command, type DeviceEvent, type Device, type ObservationCategory, RelayStatus } from './api';
+import { fetchLatest, saveDeviceOrder, logObservation, resolveAdjustment, type LatestReading, type Command, type DeviceEvent, type Device, type ObservationCategory, type RuleSuggestion, RelayStatus } from './api';
 import { DevicePanel } from "./components/DevicePanel";
 import { DeviceDiscoveryState } from "./components/DeviceDiscoveryState";
 import { ActivityCenter, type ErrorItem } from "./components/ActivityCenter";
@@ -21,6 +21,7 @@ export function App(): React.ReactElement {
   const [commands, setCommands] = useState<Command[]>([]);
   const [events, setEvents] = useState<DeviceEvent[]>([]);
   const [errors, setErrors] = useState<ErrorItem[]>([]);
+  const [suggestions, setSuggestions] = useState<RuleSuggestion[]>([]);
   const [wsRelayUpdates, setWsRelayUpdates] = useState<RelayStatus[] | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [showObservationForm, setShowObservationForm] = useState(false);
@@ -33,6 +34,20 @@ export function App(): React.ReactElement {
       source,
     };
     setErrors((prev) => [error, ...prev].slice(0, 20)); // Keep last 20 errors
+  }, []);
+
+  const handleResolveAdjustment = useCallback(async (id: string, action: "approve" | "reject") => {
+    const ok = await resolveAdjustment(id, action);
+    if (ok) {
+      // Optimistic update — WS broadcast will confirm
+      setSuggestions((prev) =>
+        prev.map((s) =>
+          s.id === id
+            ? { ...s, status: action === "approve" ? "applied" as const : "rejected" as const, resolvedAt: Date.now() }
+            : s
+        )
+      );
+    }
   }, []);
 
   // DnD sensors — distance threshold prevents triggering on clicks/taps
@@ -135,6 +150,9 @@ export function App(): React.ReactElement {
         return [command, ...prev].slice(0, 20);
       });
     },
+    onSuggestionsUpdate: (suggestionList) => {
+      setSuggestions(suggestionList);
+    },
     // Connection status is shown in UI, no need to add errors to feed
   });
 
@@ -174,7 +192,7 @@ export function App(): React.ReactElement {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const hasActivity = commands.length > 0 || events.length > 0 || errors.length > 0;
+  const hasActivity = commands.length > 0 || events.length > 0 || errors.length > 0 || suggestions.length > 0;
 
   return (
     <div className="min-h-screen w-full flex flex-col">
@@ -282,7 +300,7 @@ export function App(): React.ReactElement {
         )}
         <div className="h-full pt-4 px-5 pb-24">
           {hasActivity ? (
-            <ActivityCenter commands={commands} events={events} errors={errors} maxItems={20} />
+            <ActivityCenter commands={commands} events={events} errors={errors} suggestions={suggestions} onResolveAdjustment={handleResolveAdjustment} maxItems={20} />
           ) : (
             <div className="text-sm opacity-60">No recent activity</div>
           )}

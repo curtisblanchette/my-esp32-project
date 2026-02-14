@@ -138,6 +138,36 @@ rules:
       value: true
       reason: "Morning humidity rising toward 65% — preemptive ventilation"
 
+  # Phase 5: Cross-device coordination rules
+  - name: any_device_overheat
+    description: "If ANY device temp exceeds threshold, turn on ALL fans"
+    condition:
+      sensor: temp1
+      operator: ">"
+      threshold: 30
+      scope: any
+      duration_seconds: 30
+    action:
+      target: relay1
+      action: set
+      value: true
+      target_scope: all
+      reason: "Cross-device overheat detected — activating all fans"
+
+  - name: all_devices_humid
+    description: "If ALL devices report high humidity, alert"
+    condition:
+      sensor: hum1
+      operator: ">"
+      threshold: 70
+      scope: all
+      duration_seconds: 120
+    action:
+      target: relay1
+      action: set
+      value: true
+      reason: "All monitored spaces reporting high humidity"
+
 # LLM escalation settings
 llm:
   enabled: true

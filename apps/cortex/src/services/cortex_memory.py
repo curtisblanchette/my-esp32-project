@@ -128,6 +128,26 @@ class CortexMemory:
             sample_count=row["sample_count"],
         )
 
+    def get_all_baselines(self, device_id: str) -> list[dict]:
+        """Get all hourly baselines for a device."""
+        db = self._sqlite._get_db()
+        cursor = db.execute(
+            "SELECT device_id, sensor, hour_of_day, avg_value, std_dev, sample_count "
+            "FROM cortex_baselines WHERE device_id = ? ORDER BY sensor, hour_of_day",
+            (device_id,),
+        )
+        return [
+            {
+                "deviceId": row["device_id"],
+                "metric": row["sensor"],
+                "hour": row["hour_of_day"],
+                "avg": round(row["avg_value"], 2),
+                "stdDev": round(row["std_dev"], 3),
+                "sampleCount": row["sample_count"],
+            }
+            for row in cursor.fetchall()
+        ]
+
     def get_baseline_deviation(
         self,
         device_id: str,

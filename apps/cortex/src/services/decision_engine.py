@@ -2,7 +2,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from pathlib import Path
 
 import yaml
@@ -10,6 +10,9 @@ import yaml
 from ..models.telemetry import TelemetryMessage
 from ..models.command import Command
 from ..config import DEFAULT_DEVICE_ID, DEFAULT_LOCATION
+
+if TYPE_CHECKING:
+    from .coordinator import Coordinator
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,8 @@ class RuleCondition:
     forecast_threshold: float | None = None
     forecast_within_minutes: float = 15.0
     baseline_deviation: float | None = None   # trigger when abs(deviation) >= N stddevs
+    # Phase 5: cross-device scope
+    scope: str = "self"  # "self" | "any" | "all" | "<device_id>"
 
 
 @dataclass
@@ -39,6 +44,8 @@ class RuleAction:
     action: str
     value: Any
     reason: str
+    # Phase 5: cross-device target scope
+    target_scope: str = "self"  # "self" | "all" | "<device_id>"
 
 
 @dataclass
@@ -93,12 +100,14 @@ class DecisionEngine:
                     forecast_threshold=condition_data.get("forecast_threshold"),
                     forecast_within_minutes=condition_data.get("forecast_within_minutes", 15.0),
                     baseline_deviation=condition_data.get("baseline_deviation"),
+                    scope=condition_data.get("scope", "self"),
                 ),
                 action=RuleAction(
                     target=action_data.get("target", ""),
                     action=action_data.get("action", "set"),
                     value=action_data.get("value"),
                     reason=action_data.get("reason", ""),
+                    target_scope=action_data.get("target_scope", "self"),
                 ),
                 enabled=rule_data.get("enabled", True),
             )
@@ -113,6 +122,7 @@ class DecisionEngine:
         self,
         telemetry: TelemetryMessage,
         context: dict[str, Any] | None = None,
+        coordinator: "Coordinator | None" = None,
     ) -> list[Command]:
         """Evaluate rules against telemetry data. Returns commands to execute."""
         commands = []
@@ -122,19 +132,26 @@ class DecisionEngine:
             if not rule.enabled:
                 continue
 
-            # Get sensor reading
-            reading = telemetry.get_reading(rule.condition.sensor)
-            if reading is None:
+            # Phase 5: Resolve reading based on scope
+            has_reading, value = self._resolve_reading(
+                rule, telemetry, coordinator,
+            )
+            if not has_reading or value is None:
                 continue
 
-            # Get or create sensor state
-            state_key = f"{telemetry.device_id}:{rule.condition.sensor}:{rule.name}"
+            # State key: cross-device rules share one state key to avoid
+            # duplicate firing from each device's telemetry
+            if rule.condition.scope == "self":
+                state_key = f"{telemetry.device_id}:{rule.condition.sensor}:{rule.name}"
+            else:
+                state_key = f"_cross:{rule.condition.sensor}:{rule.name}"
+
             if state_key not in self.sensor_states:
                 self.sensor_states[state_key] = SensorState()
             state = self.sensor_states[state_key]
 
             # Check if threshold condition is met
-            condition_met = self._check_condition(reading.value, rule.condition)
+            condition_met = self._check_condition(value, rule.condition)
 
             # Check trend condition (Phase 1)
             if condition_met and rule.condition.trend:
@@ -206,15 +223,11 @@ class DecisionEngine:
                 cooldown_ok = (now - state.last_action_time) >= state.cooldown_seconds
 
                 if duration_met and cooldown_ok:
-                    command = Command(
-                        device_id=telemetry.device_id,
-                        location=telemetry.location,
-                        target=rule.action.target,
-                        action=rule.action.action,
-                        value=rule.action.value,
-                        reason=rule.action.reason,
+                    # Phase 5: Build command(s) based on target_scope
+                    new_commands = self._build_commands(
+                        rule, telemetry, coordinator,
                     )
-                    commands.append(command)
+                    commands.extend(new_commands)
                     state.last_action_time = now
                     logger.info(f"Rule {rule.name} triggered: {rule.action.reason}")
             else:
@@ -223,9 +236,142 @@ class DecisionEngine:
                     logger.debug(f"Rule {rule.name}: condition no longer met")
                 state.condition_met_since = None
 
-            state.last_value = reading.value
+            state.last_value = value
 
         return commands
+
+    # ── Phase 5: Cross-Device Helpers ─────────────────────────────────
+
+    def _resolve_reading(
+        self,
+        rule: Rule,
+        telemetry: TelemetryMessage,
+        coordinator: "Coordinator | None",
+    ) -> tuple[bool, float | None]:
+        """Resolve sensor reading based on rule scope.
+
+        Returns (has_reading, representative_value).
+
+        For scope="self": reads directly from telemetry (current behavior).
+        For scope="any": picks the extreme value most likely to pass threshold.
+        For scope="all": picks the extreme value least likely to pass threshold.
+        For scope="<device_id>": reads from that specific device via coordinator.
+        """
+        sensor = rule.condition.sensor
+        scope = rule.condition.scope
+
+        if scope == "self":
+            reading = telemetry.get_reading(sensor)
+            if reading is None or not isinstance(reading.value, (int, float)):
+                return False, None
+            return True, float(reading.value)
+
+        if coordinator is None:
+            return False, None
+
+        if scope in ("any", "all"):
+            all_readings = coordinator.get_all_latest_readings(sensor)
+            if not all_readings:
+                return False, None
+
+            values = list(all_readings.values())
+            if scope == "any":
+                # Pick value most likely to pass: max for >/>=, min for </<=
+                if rule.condition.operator in (">", ">="):
+                    return True, max(values)
+                elif rule.condition.operator in ("<", "<="):
+                    return True, min(values)
+                else:
+                    # ==, != — check if any matches
+                    for v in values:
+                        if self._check_condition(v, rule.condition):
+                            return True, v
+                    return True, values[0]
+            else:
+                # scope == "all": pick value least likely to pass
+                if rule.condition.operator in (">", ">="):
+                    return True, min(values)
+                elif rule.condition.operator in ("<", "<="):
+                    return True, max(values)
+                else:
+                    # ==, != — check if all match
+                    for v in values:
+                        if not self._check_condition(v, rule.condition):
+                            return True, v
+                    return True, values[0]
+
+        # Specific device_id
+        value = coordinator.get_latest_reading(scope, sensor)
+        if value is None:
+            return False, None
+        return True, value
+
+    def _build_commands(
+        self,
+        rule: Rule,
+        telemetry: TelemetryMessage,
+        coordinator: "Coordinator | None",
+    ) -> list[Command]:
+        """Build command(s) based on target_scope.
+
+        target_scope="self": single command to the triggering device (default).
+        target_scope="all": one command per online device that has the target actuator.
+        target_scope="<device_id>": single command to that specific device.
+        """
+        target_scope = rule.action.target_scope
+
+        if target_scope == "self":
+            return [Command(
+                device_id=telemetry.device_id,
+                location=telemetry.location,
+                target=rule.action.target,
+                action=rule.action.action,
+                value=rule.action.value,
+                reason=rule.action.reason,
+            )]
+
+        if coordinator is None:
+            logger.warning(
+                f"Rule {rule.name} has target_scope={target_scope} but no coordinator; "
+                f"falling back to triggering device"
+            )
+            return [Command(
+                device_id=telemetry.device_id,
+                location=telemetry.location,
+                target=rule.action.target,
+                action=rule.action.action,
+                value=rule.action.value,
+                reason=rule.action.reason,
+            )]
+
+        if target_scope == "all":
+            devices = coordinator.get_devices_with_actuator(rule.action.target)
+            return [
+                Command(
+                    device_id=did,
+                    location=loc,
+                    target=rule.action.target,
+                    action=rule.action.action,
+                    value=rule.action.value,
+                    reason=rule.action.reason,
+                )
+                for did, loc in devices
+            ]
+
+        # Specific device_id
+        device = coordinator._sqlite.get_device(target_scope)
+        if device and device.online:
+            return [Command(
+                device_id=device.id,
+                location=device.location,
+                target=rule.action.target,
+                action=rule.action.action,
+                value=rule.action.value,
+                reason=rule.action.reason,
+            )]
+
+        logger.warning(f"Rule {rule.name}: target device {target_scope} not found or offline")
+        return []
 
     def _check_condition(self, value: float | str, condition: RuleCondition) -> bool:
         """Check if a value meets a condition."""

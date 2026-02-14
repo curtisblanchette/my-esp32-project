@@ -16,6 +16,8 @@ AI operates on two independent paths that converge on MQTT as a shared command b
 - **[Predictive forecasting](#how-it-works)** — linear projection and EWMA smoothing to act before thresholds are breached
 - **[Baseline learning](#how-it-works)** — per-device, per-hour baselines for "unusual for this time of day" detection
 - **[Outcome tracking](#how-it-works)** — commands correlated with sensor effects, effectiveness scored and fed back to LLM
+- **[Adaptive learning](#how-it-works)** — Rule Advisor analyzes outcome data every 6 hours, uses LLM to suggest threshold/timing adjustments, auto-applies high-confidence changes
+- **[Multi-device coordination](#how-it-works)** — cross-device rules with `scope` (read from any/all devices) and `target_scope` (send to all/specific devices)
 - **Human observation logging** — log plant-health events sensors can't detect (mold, pests, wilting) via the Activity Center
 - **[Natural language control](#voice--chat-processing-pipeline)** — chat and voice commands interpreted by Ollama into structured intents
 - **HOT data** stored in [Redis](#redis) (48-hour retention)
@@ -509,6 +511,7 @@ flowchart TB
 | `devices` | Device registry with actuator state and display order |
 | `cortex_baselines` | Per-device, per-sensor, per-hour learned baselines (Welford's algorithm) |
 | `cortex_outcomes` | Command effectiveness scores with pre/post sensor snapshots (Phase 2) |
+| `cortex_suggestions` | Rule adjustment suggestions from the Rule Advisor (Phase 4) |
 
 ### Cortex Backend
 - **Purpose:** Unified backend — REST API, WebSocket, MQTT client, rules engine, voice
@@ -529,6 +532,10 @@ flowchart TB
 | `/api/commands` | GET/POST | Command history |
 | `/api/events` | GET | Device events log |
 | `/api/observations` | POST | Log human observation (`{deviceId, category, notes?}`) |
+| `/api/cortex/status` | GET | System intelligence overview |
+| `/api/cortex/baselines/:id` | GET | Learned hourly baselines for a device |
+| `/api/cortex/adjustments` | GET | Rule adjustment suggestions (`?status=pending\|applied\|rejected`) |
+| `/api/cortex/adjustments/:id` | POST | Approve or reject a suggestion |
 | `/api/chat/stream` | POST | Streaming chat (SSE) |
 | `/api/voice/transcribe` | POST | Audio → Text (Vosk STT) |
 | `/api/voice/synthesize` | POST | Text → Audio (Kokoro TTS) |
@@ -544,6 +551,7 @@ Message Types:
 - `{type: "command", data: Command}` - Single command broadcast
 - `{type: "events", data: DeviceEvent[]}` - Device events
 - `{type: "event", data: DeviceEvent}` - Single event broadcast
+- `{type: "suggestions", data: RuleSuggestion[]}` - Rule adjustment suggestions
 
 ### Web Dashboard
 - **Purpose:** React SPA for visualizing telemetry data
@@ -554,7 +562,7 @@ Message Types:
   - Time-series charts (Chart.js)
   - Relay control interface
   - Drag-and-drop device panel reordering (persisted)
-  - AI status indicator and activity feed (slide-out drawer)
+  - AI status indicator and activity feed (slide-out drawer) with rule suggestion approve/reject
   - Human observation logging (mold, pests, wilting, etc.) via Activity Center
   - Voice command input
   - Responsive design with container queries
@@ -568,7 +576,7 @@ Cortex includes an autonomous decision engine that monitors sensor readings and 
 ```mermaid
 flowchart TB
     Start([Telemetry Received]) --> Context[Build Context<br/>trends + baselines + forecasts<br/>cached 30s]
-    Context --> Rules{Rules Match?<br/>threshold + trend<br/>+ forecast + baseline deviation<br/>+ time-of-day}
+    Context --> Rules{Rules Match?<br/>threshold + trend<br/>+ forecast + baseline deviation<br/>+ time-of-day + cross-device scope}
     Rules -->|Yes| Execute[Execute Command<br/>+ OutcomeTracker pre-snapshot]
     Rules -->|No| Escalate{LLM<br/>Escalation<br/>Trigger?}
     Escalate -->|Yes| LLM[Ollama Analysis<br/>enriched with trends<br/>+ forecasts + baselines<br/>+ past effectiveness]
@@ -590,8 +598,10 @@ flowchart TB
 3. **LLM Escalation** - Complex patterns escalate to Ollama with enriched context (trend analysis, forecasts, baseline sigma deviations, past command effectiveness)
 4. **Outcome Tracking** - After a command fires, `OutcomeTracker` snapshots sensor state, checks at 1m/5m/10m intervals, and scores effectiveness (-1.0 to +1.0). Results persist to SQLite and feed back into LLM prompts
 5. **Baseline Learning** - Per-device, per-sensor, per-hour baselines accumulate incrementally via Welford's online algorithm, enabling "unusual for this time of day" detection
-6. **Direct MQTT** - AI subscribes to telemetry and publishes commands directly
-7. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
+6. **Adaptive Learning** - Every 6 hours, the `RuleAdvisor` analyzes outcome effectiveness, baselines, and human observations, then uses the LLM to suggest rule threshold/timing adjustments. High-confidence threshold changes auto-apply; others await approval via the `/api/cortex/adjustments` API
+7. **Multi-Device Coordination** - Rules can use `scope: any` to trigger when any device exceeds a threshold, `scope: all` to require all devices, or `scope: <device_id>` to read from a specific device. `target_scope: all` sends commands to every device with the target actuator
+8. **Direct MQTT** - AI subscribes to telemetry and publishes commands directly
+9. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
 
 ### Configuration
 
@@ -642,6 +652,22 @@ rules:
       value: true
       reason: "Temperature rising during daytime — preemptive cooling"
 
+  # Cross-device coordination (Phase 5)
+  - name: "any_device_overheat"
+    description: "If ANY device temp exceeds threshold, turn on ALL fans"
+    condition:
+      sensor: "temp1"
+      operator: ">"
+      threshold: 30
+      scope: "any"           # Read from any online device
+      duration_seconds: 30
+    action:
+      target: "relay1"
+      action: "set"
+      value: true
+      target_scope: "all"    # Send to all devices with relay1
+      reason: "Cross-device overheat — activating all fans"
+
 llm:
   enabled: true
   escalation_triggers:
@@ -663,6 +689,17 @@ llm:
 | `forecast_threshold` | number | (Optional) Value the forecast is checked against |
 | `forecast_within_minutes` | number | (Optional) Time horizon for prediction (default: 15) |
 | `baseline_deviation` | number | (Optional) Trigger when abs(deviation) >= N standard deviations from baseline |
+| `scope` | string | (Optional) `self` (default), `any`, `all`, or `<device_id>` — cross-device condition source (Phase 5) |
+
+**Rule Action Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `target` | string | Actuator ID to control (e.g., `relay1`) |
+| `action` | string | Action type: `set` |
+| `value` | any | Value to set |
+| `reason` | string | Human-readable reason for the action |
+| `target_scope` | string | (Optional) `self` (default), `all`, or `<device_id>` — command destination (Phase 5) |
 
 ### Command Flow
 
@@ -731,7 +768,7 @@ cd apps/cortex
 pytest tests/ -m "not e2e" -v
 ```
 
-Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, forecast conditions, baseline deviation, cooldowns, YAML loading, LLM escalation), `forecaster.py` (linear forecast, EWMA, breach detection, baseline deviation), `observations.py` (endpoint validation, storage, broadcast), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries).
+Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, forecast conditions, baseline deviation, cooldowns, YAML loading, LLM escalation), `forecaster.py` (linear forecast, EWMA, breach detection, baseline deviation), `observations.py` (endpoint validation, storage, broadcast), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries), `rule_advisor.py` (LLM analysis, auto-apply, approve/reject, confidence gating, observation correlation), `cortex_api.py` (status, baselines, adjustments endpoints), `coordinator.py` (cross-device state queries, actuator lookups), `cross_device_rules.py` (scope any/all/self/device_id, target_scope all/self/device_id, shared state tracking, YAML loading).
 
 #### E2E Simulation Tests (requires running stack)
 ```bash

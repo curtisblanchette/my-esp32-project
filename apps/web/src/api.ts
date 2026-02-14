@@ -348,6 +348,82 @@ export async function synthesizeSpeech(text: string): Promise<Blob> {
   return r.blob();
 }
 
+// ── Cortex Intelligence API ────────────────────────────────────────
+
+export type CortexStatus = {
+  ok: boolean;
+  outcomes: { total: number; avgEffectiveness: number; successRate: number };
+  baselines: { total: number; sensorsTracked: number };
+  suggestions: { pending: number; applied: number; rejected: number; total: number };
+  lastAdvisorRun: number | null;
+};
+
+export type RuleSuggestion = {
+  id: string;
+  createdAt: number;
+  ruleName: string;
+  field: string;
+  currentValue: string;
+  suggestedValue: string;
+  reason: string;
+  confidence: number;
+  status: "pending" | "approved" | "rejected" | "applied";
+  resolvedAt: number | null;
+  outcomeSampleCount: number;
+  observationContext: string | null;
+};
+
+export type DeviceBaseline = {
+  deviceId: string;
+  metric: string;
+  hour: number;
+  avg: number;
+  stdDev: number;
+  sampleCount: number;
+};
+
+export async function fetchCortexStatus(signal?: AbortSignal): Promise<CortexStatus> {
+  const r = await fetch("/api/cortex/status", { cache: "no-store", signal });
+  return (await r.json()) as CortexStatus;
+}
+
+export async function fetchAdjustments(
+  status?: string,
+  signal?: AbortSignal,
+): Promise<RuleSuggestion[]> {
+  const url = status
+    ? `/api/cortex/adjustments?status=${encodeURIComponent(status)}`
+    : "/api/cortex/adjustments";
+  const r = await fetch(url, { cache: "no-store", signal });
+  const data = (await r.json()) as { ok: boolean; adjustments: RuleSuggestion[] };
+  return Array.isArray(data.adjustments) ? data.adjustments : [];
+}
+
+export async function fetchDeviceBaselines(
+  deviceId: string,
+  signal?: AbortSignal,
+): Promise<DeviceBaseline[]> {
+  const r = await fetch(`/api/cortex/baselines/${encodeURIComponent(deviceId)}`, {
+    cache: "no-store",
+    signal,
+  });
+  const data = (await r.json()) as { ok: boolean; baselines: DeviceBaseline[] };
+  return Array.isArray(data.baselines) ? data.baselines : [];
+}
+
+export async function resolveAdjustment(
+  id: string,
+  action: "approve" | "reject",
+): Promise<boolean> {
+  const r = await fetch(`/api/cortex/adjustments/${encodeURIComponent(id)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action }),
+  });
+  const data = (await r.json()) as { ok: boolean };
+  return data.ok;
+}
+
 // Device capability helpers
 export function hasSensor(device: Device, type: string): boolean {
   return device.capabilities.sensors.some((s) => s.type === type);

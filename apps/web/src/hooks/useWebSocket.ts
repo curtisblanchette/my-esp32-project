@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { LatestReading, RelayStatus, Device, DeviceEvent, Command } from "../api";
+import type { LatestReading, RelayStatus, Device, DeviceEvent, Command, RuleSuggestion } from "../api";
 
 type WebSocketMessage =
   | { type: "latest"; data: LatestReading }
@@ -8,7 +8,8 @@ type WebSocketMessage =
   | { type: "events"; data: DeviceEvent[] }
   | { type: "event"; data: DeviceEvent }
   | { type: "commands"; data: Command[] }
-  | { type: "command"; data: Command };
+  | { type: "command"; data: Command }
+  | { type: "suggestions"; data: RuleSuggestion[] };
 
 interface UseWebSocketOptions {
   onLatestReading?: (reading: LatestReading) => void;
@@ -18,6 +19,7 @@ interface UseWebSocketOptions {
   onEventReceived?: (event: DeviceEvent) => void;
   onCommandsUpdate?: (commands: Command[]) => void;
   onCommandReceived?: (command: Command) => void;
+  onSuggestionsUpdate?: (suggestions: RuleSuggestion[]) => void;
   onError?: (error: Event) => void;
   reconnectInterval?: number;
 }
@@ -31,6 +33,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     onEventReceived,
     onCommandsUpdate,
     onCommandReceived,
+    onSuggestionsUpdate,
     onError,
     reconnectInterval = 3000,
   } = options;
@@ -92,6 +95,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
             onCommandsUpdate(message.data);
           } else if (message.type === "command" && onCommandReceived) {
             onCommandReceived(message.data);
+          } else if (message.type === "suggestions" && onSuggestionsUpdate) {
+            onSuggestionsUpdate(message.data);
           }
         } catch (error) {
           console.error("Error parsing WebSocket message:", error);

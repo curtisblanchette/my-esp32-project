@@ -1,5 +1,5 @@
 """
-Background jobs — aggregation (Redis → SQLite) and command expiration.
+Background jobs — aggregation (Redis → SQLite), command expiration, rule advisor.
 
 Ported from apps/api/src/services/aggregationJob.ts and commandExpirationJob.ts.
 """
@@ -13,9 +13,12 @@ if TYPE_CHECKING:
     from .redis_client import RedisClient
     from .sqlite_client import SqliteClient
     from .websocket_server import WebSocketServer
+    from .rule_advisor import RuleAdvisor
 
 logger = logging.getLogger(__name__)
 
+ADVISOR_INTERVAL_S = 6 * 60 * 60  # 6 hours
+ADVISOR_INITIAL_DELAY_S = 60      # 1 minute after startup
 AGGREGATION_INTERVAL_S = 10 * 60  # 10 minutes
 BUCKET_SIZE_MS = 5 * 60 * 1000    # 5 minutes
 EXPIRATION_CHECK_INTERVAL_S = 5   # 5 seconds
@@ -125,3 +128,36 @@ async def _check_and_expire(sqlite: "SqliteClient", ws: "WebSocketServer") -> No
                 await ws.broadcast_command(sqlite.command_to_dict(cmd))
     except Exception as e:
         logger.error(f"Command expiration job failed: {e}")
+
+
+async def start_rule_advisor_job(
+    rule_advisor: "RuleAdvisor",
+    sqlite: "SqliteClient | None" = None,
+    ws: "WebSocketServer | None" = None,
+) -> None:
+    """Periodically run the Rule Advisor to suggest rule improvements."""
+    logger.info(f"Starting rule advisor job (interval: {ADVISOR_INTERVAL_S}s)")
+    await asyncio.sleep(ADVISOR_INITIAL_DELAY_S)
+
+    while True:
+        try:
+            suggestions = await asyncio.to_thread(rule_advisor.analyze)
+            if suggestions:
+                logger.info(f"Rule advisor produced {len(suggestions)} suggestion(s)")
+                for s in suggestions:
+                    action = "auto-applied" if s["status"] == "applied" else "pending review"
+                    logger.info(
+                        f"  [{action}] {s['ruleName']}.{s['field']}: "
+                        f"{s['currentValue']} → {s['suggestedValue']} "
+                        f"(confidence: {s['confidence']:.0%})"
+                    )
+                # Broadcast updated suggestions to all WebSocket clients
+                if ws and sqlite:
+                    all_suggestions = sqlite.get_suggestions(limit=20)
+                    await ws.broadcast_suggestions(all_suggestions)
+            else:
+                logger.info("Rule advisor: no suggestions this cycle")
+        except Exception as e:
+            logger.error(f"Rule advisor job failed: {e}")
+
+        await asyncio.sleep(ADVISOR_INTERVAL_S)

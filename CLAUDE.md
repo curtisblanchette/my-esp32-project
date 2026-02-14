@@ -66,6 +66,24 @@ ESP32 (MicroPython) → MQTT → Cortex (Python/FastAPI) → Redis (HOT) + SQLit
 - Rules engine supports `baseline_deviation` to trigger on abnormal values (N standard deviations from hourly baseline)
 - Forecast data (predicted values at 10m/15m, EWMA, rate) included in context cache and LLM prompts
 
+**Adaptive Learning (Phase 4):**
+- `RuleAdvisor` periodically analyzes outcome data, baselines, and observations every 6 hours
+- Uses LLM to suggest threshold/timing adjustments with confidence scores
+- High-confidence threshold adjustments (>= 0.8) auto-apply to in-memory rules
+- Lower-confidence or non-threshold suggestions require manual approval via API
+- Suggestions stored in `cortex_suggestions` table with status tracking (pending/applied/rejected)
+- Applied suggestions modify in-memory rules only — `rules.yaml` remains the user-authored source of truth
+- Background job runs via `start_rule_advisor_job()` using `asyncio.to_thread()` for LLM calls
+- Suggestions broadcast to Activity Center via WebSocket (`{type: "suggestions"}`) for real-time approve/reject
+
+**Multi-Device Coordination (Phase 5):**
+- `Coordinator` provides cross-device state queries via `WebSocketServer._latest_by_device` and `SqliteClient` device registry
+- Rules support `scope` condition field: `"self"` (default), `"any"`, `"all"`, or `"<device_id>"` to read from multiple devices
+- Rules support `target_scope` action field: `"self"` (default), `"all"`, or `"<device_id>"` to send commands to multiple devices
+- Scope `any` picks extreme value most likely to pass (e.g., `max` for `>` operator); `all` picks least likely (e.g., `min` for `>`)
+- Cross-device rules use shared `_cross:{sensor}:{rule_name}` state key for cooldown/duration tracking
+- Backward compatible — all defaults are `"self"`, existing rules work identically
+
 **Voice & Chat Architecture:**
 
 Both text chat and voice commands funnel through a shared `execute_intent()` function, ensuring all intents are handled identically.
@@ -113,6 +131,7 @@ flowchart TB
 - `DataReader` merges both sources for queries and decision context
 - `cortex_baselines` table stores learned per-hour sensor baselines
 - `cortex_outcomes` table stores command effectiveness scores (Phase 2)
+- `cortex_suggestions` table stores rule adjustment suggestions from the Rule Advisor (Phase 4)
 
 **MQTT Topics:**
 - `home/{location}/{deviceId}/telemetry` - Sensor readings (Device → Server)
@@ -148,6 +167,12 @@ flowchart TB
 **Observations**
 - `POST /api/observations` - Log human observation (`{deviceId, category, notes?}`)
 
+**Cortex Intelligence (Phase 4)**
+- `GET /api/cortex/status` - System intelligence overview (outcomes, baselines, suggestions counts)
+- `GET /api/cortex/baselines/:deviceId` - Learned hourly baselines for a device
+- `GET /api/cortex/adjustments` - Rule adjustment suggestions (`?status=pending|applied|rejected`)
+- `POST /api/cortex/adjustments/:id` - Approve or reject a suggestion (`{action: "approve"|"reject"}`)
+
 **Chat (NLP)**
 - `POST /api/chat` - Process natural language command
 - `POST /api/chat/stream` - Streaming chat response (SSE)
@@ -165,6 +190,7 @@ flowchart TB
   - `{type: "devices", data: ...}` - Device registry updates
   - `{type: "commands", data: ...}` - Command history
   - `{type: "events", data: ...}` - Device events
+  - `{type: "suggestions", data: ...}` - Rule adjustment suggestions (Phase 4)
 
 ## Key Files
 
@@ -181,13 +207,15 @@ flowchart TB
 - `apps/cortex/src/services/analysis.py` - Sensor data analysis, trend context, rate-of-change
 - `apps/cortex/src/services/data_reader.py` - Unified Redis+SQLite telemetry read layer
 - `apps/cortex/src/services/cortex_memory.py` - Per-device hourly baseline tracking (Welford's algorithm)
-- `apps/cortex/src/services/background_jobs.py` - Aggregation (Redis→SQLite) + command expiration
-- `apps/cortex/src/services/decision_engine.py` - Rules engine with trend/time-of-day/forecast/baseline-deviation conditions + LLM escalation
+- `apps/cortex/src/services/background_jobs.py` - Aggregation (Redis→SQLite) + command expiration + rule advisor periodic job
+- `apps/cortex/src/services/decision_engine.py` - Rules engine with trend/time-of-day/forecast/baseline-deviation/cross-device conditions + LLM escalation
+- `apps/cortex/src/services/coordinator.py` - Cross-device state provider for multi-device rule evaluation (Phase 5)
 - `apps/cortex/src/services/forecaster.py` - Sensor forecasting: linear projection, EWMA smoothing, breach prediction, baseline deviation (Phase 3)
 - `apps/cortex/src/services/outcome_tracker.py` - Command outcome tracking, effectiveness scoring (Phase 2)
+- `apps/cortex/src/services/rule_advisor.py` - Rule Advisor: LLM-powered rule analysis, auto-apply, approve/reject (Phase 4)
 - `apps/cortex/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
-- `apps/cortex/src/api/` - REST route handlers (telemetry, devices, relays, commands, events, observations, chat, voice)
-- `apps/cortex/config/rules.yaml` - Automation rules (threshold, trend, forecast, baseline deviation)
+- `apps/cortex/src/api/` - REST route handlers (telemetry, devices, relays, commands, events, observations, cortex, chat, voice)
+- `apps/cortex/config/rules.yaml` - Automation rules (threshold, trend, forecast, baseline deviation, cross-device scope)
 - `apps/cortex/tests/conftest.py` - Test fixtures (sqlite_db, mock_redis, telemetry_factory)
 - `apps/cortex/tests/test_analysis.py` - Unit tests: stats, trends, rate-of-change
 - `apps/cortex/tests/test_cortex_memory.py` - Unit tests: baseline tracking (Welford's)
@@ -196,6 +224,10 @@ flowchart TB
 - `apps/cortex/tests/test_forecaster.py` - Unit tests: linear forecast, EWMA, breach detection, baseline deviation
 - `apps/cortex/tests/test_observations.py` - Unit tests: observation endpoint validation, storage, broadcast
 - `apps/cortex/tests/test_outcome_tracker.py` - Unit tests: outcome tracking, scoring, lifecycle
+- `apps/cortex/tests/test_rule_advisor.py` - Unit tests: rule advisor analysis, auto-apply, approve/reject, LLM parsing
+- `apps/cortex/tests/test_cortex_api.py` - Unit tests: /api/cortex routes (status, baselines, adjustments)
+- `apps/cortex/tests/test_coordinator.py` - Unit tests: cross-device state provider (Phase 5)
+- `apps/cortex/tests/test_cross_device_rules.py` - Unit tests: scope/target_scope rule evaluation, YAML loading, state tracking (Phase 5)
 - `apps/cortex/tests/test_e2e_flow.py` - E2E tests: MQTT→API→Storage flow (requires running services)
 
 **Web:**

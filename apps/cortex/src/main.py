@@ -58,6 +58,8 @@ class Orchestrator:
         # Phase 2: outcome tracking
         self._outcome_tracker = None
         self._latest_telemetry: TelemetryMessage | None = None
+        # Phase 5: cross-device coordination
+        self._coordinator = None
 
     @property
     def running(self) -> bool:
@@ -129,6 +131,34 @@ class Orchestrator:
         from .services.outcome_tracker import OutcomeTracker
         self._outcome_tracker = OutcomeTracker(sqlite, self._data_reader)
         logger.info("Phase 2: OutcomeTracker initialized")
+
+        # Phase 4: Initialize RuleAdvisor and mount cortex API routes
+        from .services.rule_advisor import RuleAdvisor
+        from .api.cortex import create_cortex_router
+        self._rule_advisor = RuleAdvisor(
+            sqlite, self._outcome_tracker, self._memory,
+            self.ollama, self.engine,
+        )
+        app.include_router(
+            create_cortex_router(
+                sqlite, self._outcome_tracker, self._memory,
+                self._rule_advisor, ws_server,
+            ),
+            prefix="/api/cortex",
+        )
+        logger.info("Phase 4: RuleAdvisor initialized, /api/cortex routes mounted")
+
+        # Start rule advisor background job
+        from .services.background_jobs import start_rule_advisor_job
+        asyncio.run_coroutine_threadsafe(
+            start_rule_advisor_job(self._rule_advisor, sqlite, ws_server),
+            self._event_loop,
+        )
+
+        # Phase 5: Initialize Coordinator for cross-device rule evaluation
+        from .services.coordinator import Coordinator
+        self._coordinator = Coordinator(ws_server, sqlite)
+        logger.info("Phase 5: Coordinator initialized")
 
         # Initialize MQTT with storage + WebSocket + decision engine
         self.mqtt = MqttService(
@@ -221,8 +251,8 @@ class Orchestrator:
         # Build or reuse cached context (Phase 1)
         context = self._build_context(telemetry.device_id)
 
-        # Evaluate rules with context
-        commands = self.engine.evaluate(telemetry, context)
+        # Evaluate rules with context (Phase 5: pass coordinator for cross-device rules)
+        commands = self.engine.evaluate(telemetry, context, self._coordinator)
         for command in commands:
             self._execute_command(command)
 

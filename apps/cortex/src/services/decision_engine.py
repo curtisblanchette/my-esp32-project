@@ -20,6 +20,10 @@ class RuleCondition:
     operator: str  # >, <, >=, <=, ==, !=
     threshold: float | str
     duration_seconds: int = 0
+    # Phase 1: trend and time-of-day conditions
+    trend: str | None = None            # "rising" | "falling" | "stable"
+    trend_window_minutes: int = 30
+    time_of_day: dict | None = None     # {"after": "08:00", "before": "22:00"}
 
 
 @dataclass
@@ -76,6 +80,9 @@ class DecisionEngine:
                     operator=condition_data.get("operator", ">"),
                     threshold=condition_data.get("threshold", 0),
                     duration_seconds=condition_data.get("duration_seconds", 0),
+                    trend=condition_data.get("trend"),
+                    trend_window_minutes=condition_data.get("trend_window_minutes", 30),
+                    time_of_day=condition_data.get("time_of_day"),
                 ),
                 action=RuleAction(
                     target=action_data.get("target", ""),
@@ -92,7 +99,11 @@ class DecisionEngine:
 
         return cls(rules=rules, llm_config=llm_config)
 
-    def evaluate(self, telemetry: TelemetryMessage) -> list[Command]:
+    def evaluate(
+        self,
+        telemetry: TelemetryMessage,
+        context: dict[str, Any] | None = None,
+    ) -> list[Command]:
         """Evaluate rules against telemetry data. Returns commands to execute."""
         commands = []
         now = time.time()
@@ -112,8 +123,20 @@ class DecisionEngine:
                 self.sensor_states[state_key] = SensorState()
             state = self.sensor_states[state_key]
 
-            # Check if condition is met
+            # Check if threshold condition is met
             condition_met = self._check_condition(reading.value, rule.condition)
+
+            # Check trend condition (Phase 1)
+            if condition_met and rule.condition.trend and context:
+                trend_data = context.get("trends", {}).get(rule.condition.sensor)
+                if trend_data:
+                    condition_met = trend_data.get("trend") == rule.condition.trend
+                else:
+                    condition_met = False  # No trend data available
+
+            # Check time-of-day condition (Phase 1)
+            if condition_met and rule.condition.time_of_day:
+                condition_met = self._check_time_of_day(rule.condition.time_of_day)
 
             if condition_met:
                 # Track when condition started being met
@@ -177,6 +200,26 @@ class DecisionEngine:
             logger.error(f"Error evaluating condition: {e}")
 
         return False
+
+    def _check_time_of_day(self, time_range: dict) -> bool:
+        """Check if current time is within the specified range."""
+        from datetime import datetime
+        now = datetime.now()
+        current_minutes = now.hour * 60 + now.minute
+
+        after_str = time_range.get("after", "00:00")
+        before_str = time_range.get("before", "23:59")
+
+        after_parts = after_str.split(":")
+        before_parts = before_str.split(":")
+        after_minutes = int(after_parts[0]) * 60 + int(after_parts[1])
+        before_minutes = int(before_parts[0]) * 60 + int(before_parts[1])
+
+        if after_minutes <= before_minutes:
+            return after_minutes <= current_minutes <= before_minutes
+        else:
+            # Overnight range (e.g., 22:00-06:00)
+            return current_minutes >= after_minutes or current_minutes <= before_minutes
 
     def should_escalate_to_llm(self, telemetry: TelemetryMessage) -> bool:
         """Check if the situation should be escalated to the LLM."""

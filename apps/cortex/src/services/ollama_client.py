@@ -109,39 +109,65 @@ class OllamaClient:
         context: dict[str, Any],
         recent_commands: list[dict] | None = None,
     ) -> str:
-        """Build the prompt for the LLM."""
+        """Build the prompt for the LLM with trend and baseline data."""
         # Format current readings
         readings_str = "\n".join(
             f"  - {r.id}: {r.value}{' ' + r.unit if r.unit else ''}"
             for r in telemetry.readings
         )
 
-        # Format context
+        # Format trend data (Phase 1)
+        trend_str = ""
+        trends = context.pop("_trends", None) if context else None
+        if trends:
+            trend_str = "\nTrend analysis (last 30 minutes):"
+            for sensor, data in trends.items():
+                direction = data.get("trend", "stable")
+                rate = data.get("rate", 0)
+                mean = data.get("mean", 0)
+                unit = "°C/min" if "temp" in sensor else "%/min"
+                trend_str += f"\n  - {sensor}: {direction} ({rate:+.2f}{unit}), 30min avg: {mean:.1f}"
+
+        # Format baseline data (Phase 1)
+        baseline_str = ""
+        baselines = context.pop("_baselines", None) if context else None
+        if baselines:
+            baseline_str = "\nBaseline comparison (vs normal for this hour):"
+            for sensor, data in baselines.items():
+                avg = data.get("avg", 0)
+                deviation = data.get("deviation")
+                samples = data.get("samples", 0)
+                if deviation is not None:
+                    status = "normal" if abs(deviation) < 1.5 else "unusual" if abs(deviation) < 2.5 else "abnormal"
+                    baseline_str += f"\n  - {sensor}: baseline={avg:.1f}, deviation={deviation:+.1f}σ ({status}, {samples} samples)"
+
+        # Format sensor state context
         context_str = ""
         if context:
             for device_id, sensors in context.items():
-                context_str += f"\nDevice {device_id}:\n"
-                for sensor, state in sensors.items():
-                    if state.get("last_value") is not None:
-                        context_str += f"  - {sensor}: last={state['last_value']}, condition_active={state.get('condition_active', False)}\n"
+                if device_id.startswith("_"):
+                    continue
+                if isinstance(sensors, dict):
+                    context_str += f"\nDevice {device_id}:"
+                    for sensor, state in sensors.items():
+                        if isinstance(state, dict) and state.get("last_value") is not None:
+                            context_str += f"\n  - {sensor}: last={state['last_value']}, condition_active={state.get('condition_active', False)}"
 
         # Format recent commands
         commands_str = ""
         if recent_commands:
-            commands_str = "\nRecent commands (last 5 minutes):\n"
+            commands_str = "\nRecent commands (last 5 minutes):"
             for cmd in recent_commands[-5:]:
-                commands_str += f"  - {cmd.get('target')}: {cmd.get('action')}={cmd.get('value')} ({cmd.get('reason', 'no reason')})\n"
+                commands_str += f"\n  - {cmd.get('target')}: {cmd.get('action')}={cmd.get('value')} ({cmd.get('reason', 'no reason')})"
 
         prompt = f"""Current sensor readings from {telemetry.device_id} at {telemetry.location}:
 {readings_str}
-
-{f"Historical context:{context_str}" if context_str else ""}
-{commands_str if commands_str else ""}
+{trend_str}{baseline_str}{f"\n\nSensor states:{context_str}" if context_str else ""}{commands_str}
 
 Based on these readings, should any action be taken? Consider:
 1. Is the temperature comfortable (18-26°C is typical comfort range)?
 2. Is humidity at a reasonable level (30-60% is typical)?
-3. Are there any concerning trends?
+3. Are there any concerning trends or deviations from baseline?
 
 Respond with JSON only."""
 

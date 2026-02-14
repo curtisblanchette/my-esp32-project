@@ -49,6 +49,12 @@ class Orchestrator:
         self._http_server: uvicorn.Server | None = None
         self._http_thread: threading.Thread | None = None
         self._event_loop: asyncio.AbstractEventLoop | None = None
+        # Phase 1: trend context and baselines
+        self._data_reader = None
+        self._memory = None
+        self._context_cache: dict | None = None
+        self._context_cache_ts: float = 0.0
+        self._context_cache_ttl: float = 30.0
 
     @property
     def running(self) -> bool:
@@ -108,6 +114,13 @@ class Orchestrator:
 
         loop_thread = threading.Thread(target=run_loop, daemon=True)
         loop_thread.start()
+
+        # Phase 1: Initialize DataReader and CortexMemory
+        from .services.data_reader import DataReader
+        from .services.cortex_memory import CortexMemory
+        self._data_reader = DataReader(redis_client, sqlite)
+        self._memory = CortexMemory(sqlite)
+        logger.info("Phase 1: DataReader and CortexMemory initialized")
 
         # Initialize MQTT with storage + WebSocket + decision engine
         self.mqtt = MqttService(
@@ -191,23 +204,130 @@ class Orchestrator:
     # ── Decision Engine Handlers ─────────────────────────────────────
 
     def _handle_telemetry(self, telemetry: TelemetryMessage):
-        """Decision engine: evaluate rules against telemetry."""
+        """Decision engine: evaluate rules with trend context."""
         logger.debug(f"Evaluating rules for {telemetry.device_id}")
 
-        commands = self.engine.evaluate(telemetry)
+        # Build or reuse cached context (Phase 1)
+        context = self._build_context(telemetry.device_id)
+
+        # Evaluate rules with context
+        commands = self.engine.evaluate(telemetry, context)
         for command in commands:
             self._execute_command(command)
 
+        # LLM escalation with enriched context
         if not commands and self.engine.should_escalate_to_llm(telemetry):
             if self.ollama and self.ollama.is_available() and not self._pending_llm_analysis:
                 logger.info("Escalating to LLM for analysis")
                 self._pending_llm_analysis = True
+                enriched = {**self.engine.get_context_summary()}
+                if context:
+                    enriched["_trends"] = context.get("trends", {})
+                    enriched["_baselines"] = context.get("baselines", {})
                 self.ollama.analyze_async(
                     telemetry,
-                    self.engine.get_context_summary(),
+                    enriched,
                     self.recent_commands,
                     callback=self._handle_llm_result,
                 )
+
+        # Update baselines (cheap, incremental)
+        self._update_baselines(telemetry)
+
+    def _build_context(self, device_id: str) -> dict | None:
+        """Build decision context from recent history. Cached for 30 seconds."""
+        now = time.time()
+        if self._context_cache and (now - self._context_cache_ts) < self._context_cache_ttl:
+            return self._context_cache
+
+        if not self._data_reader:
+            return None
+
+        try:
+            readings = self._data_reader.get_recent_readings(window_minutes=30, device_id=device_id)
+            if len(readings) < 3:
+                return None
+
+            from .services.analysis import build_trend_context
+
+            temp_values, temp_ts = self._data_reader.extract_metric(readings, "temperature")
+            hum_values, hum_ts = self._data_reader.extract_metric(readings, "humidity")
+
+            trends = {}
+            temp_trend = build_trend_context("temperature", temp_values, temp_ts)
+            if temp_trend:
+                trends["temp1"] = {
+                    "trend": temp_trend.trend,
+                    "rate": temp_trend.rate_of_change,
+                    "mean": temp_trend.mean_30m,
+                    "current": temp_trend.current_value,
+                }
+            hum_trend = build_trend_context("humidity", hum_values, hum_ts)
+            if hum_trend:
+                trends["hum1"] = {
+                    "trend": hum_trend.trend,
+                    "rate": hum_trend.rate_of_change,
+                    "mean": hum_trend.mean_30m,
+                    "current": hum_trend.current_value,
+                }
+
+            # Get baselines for current hour
+            baselines = {}
+            if self._memory:
+                from datetime import datetime
+                current_hour = datetime.now().hour
+                for sensor, metric in [("temp1", "temperature"), ("hum1", "humidity")]:
+                    baseline = self._memory.get_baseline(device_id, metric, current_hour)
+                    if baseline and baseline.sample_count >= 10:
+                        current = trends.get(sensor, {}).get("current")
+                        deviation = None
+                        if current is not None and baseline.std_dev > 0:
+                            deviation = (current - baseline.avg_value) / baseline.std_dev
+                        baselines[sensor] = {
+                            "avg": baseline.avg_value,
+                            "std_dev": baseline.std_dev,
+                            "samples": baseline.sample_count,
+                            "deviation": deviation,
+                        }
+
+            self._context_cache = {
+                "trends": trends,
+                "baselines": baselines,
+                "built_at": now,
+            }
+            self._context_cache_ts = now
+
+            if trends:
+                parts = [f"{k}={v['trend']}({v['rate']:+.3f}/min)" for k, v in trends.items()]
+                logger.debug(f"Context built: {', '.join(parts)}")
+
+            return self._context_cache
+
+        except Exception as e:
+            logger.error(f"Failed to build context: {e}")
+            return None
+
+    def _update_baselines(self, telemetry: TelemetryMessage) -> None:
+        """Update hourly baselines from current telemetry (incremental)."""
+        if not self._memory:
+            return
+        try:
+            from datetime import datetime
+            current_hour = datetime.now().hour
+
+            temp_reading = telemetry.get_reading("temp1")
+            if temp_reading and isinstance(temp_reading.value, (int, float)):
+                self._memory.update_baseline(
+                    telemetry.device_id, "temperature", current_hour, float(temp_reading.value),
+                )
+
+            hum_reading = telemetry.get_reading("hum1")
+            if hum_reading and isinstance(hum_reading.value, (int, float)):
+                self._memory.update_baseline(
+                    telemetry.device_id, "humidity", current_hour, float(hum_reading.value),
+                )
+        except Exception as e:
+            logger.error(f"Failed to update baselines: {e}")
 
     def _handle_llm_result(self, command: Command | None):
         self._pending_llm_analysis = False

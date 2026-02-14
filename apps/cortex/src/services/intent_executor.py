@@ -18,6 +18,7 @@ from .analysis import (
 from .ollama_client import OllamaIntent
 
 if TYPE_CHECKING:
+    from .data_reader import DataReader
     from .mqtt_client import MqttService
     from .redis_client import RedisClient
     from .sqlite_client import SqliteClient
@@ -49,6 +50,7 @@ async def execute_intent(
     ws: "WebSocketServer",
     device_id: str | None = None,
     location: str | None = None,
+    data_reader: "DataReader | None" = None,
 ) -> dict[str, Any]:
     """
     Execute a parsed intent.
@@ -180,8 +182,17 @@ async def execute_intent(
         until_ms = int(time.time() * 1000)
 
         try:
-            redis_readings = redis.get_readings_in_range(since_ms, until_ms)
-            sqlite_readings = sqlite.query_history_raw(since_ms, until_ms, limit=5000)
+            if data_reader:
+                from .redis_client import RedisReading
+                merged = data_reader.get_readings(since_ms, until_ms)
+                redis_readings = [
+                    RedisReading(ts=r.ts, temp=r.temp, humidity=r.humidity, device_id=r.device_id)
+                    for r in merged
+                ]
+                sqlite_readings = []
+            else:
+                redis_readings = redis.get_readings_in_range(since_ms, until_ms)
+                sqlite_readings = sqlite.query_history_raw(since_ms, until_ms, limit=5000)
 
             analysis = analyze_sensor_data(metric, redis_readings, sqlite_readings)
             formatted = format_analysis_reply(

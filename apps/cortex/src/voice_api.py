@@ -114,6 +114,10 @@ def _mount_routes(app, sqlite, redis_client, ws_server, ollama, voice_service):
     # Use a no-op redis if unavailable (analysis/history still work via SQLite)
     redis_for_routes = redis_client or _NoOpRedis()
 
+    # Phase 1: Create DataReader for unified Redis+SQLite reads
+    from .services.data_reader import DataReader
+    data_reader = DataReader(redis_for_routes, sqlite)
+
     app.include_router(
         create_telemetry_router(sqlite, redis_for_routes, ws_server),
         prefix="/api",
@@ -135,11 +139,11 @@ def _mount_routes(app, sqlite, redis_client, ws_server, ollama, voice_service):
         prefix="/api/events",
     )
     app.include_router(
-        create_chat_router(sqlite, redis_for_routes, ws_server, ollama),
+        create_chat_router(sqlite, redis_for_routes, ws_server, ollama, data_reader),
         prefix="/api/chat",
     )
     app.include_router(
-        create_voice_router(sqlite, redis_for_routes, ws_server, ollama, voice_service),
+        create_voice_router(sqlite, redis_for_routes, ws_server, ollama, voice_service, data_reader),
         prefix="/api/voice",
     )
 

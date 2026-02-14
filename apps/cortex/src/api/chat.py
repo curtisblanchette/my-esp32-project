@@ -22,7 +22,7 @@ class ChatRequest(BaseModel):
     location: str | None = None
 
 
-def create_chat_router(sqlite, redis_client, ws_server, ollama) -> APIRouter:
+def create_chat_router(sqlite, redis_client, ws_server, ollama, data_reader=None) -> APIRouter:
     r = APIRouter()
 
     @r.post("")
@@ -34,6 +34,7 @@ def create_chat_router(sqlite, redis_client, ws_server, ollama) -> APIRouter:
                 intent, source="chat", message=body.message,
                 sqlite=sqlite, redis=redis_client, mqtt=mqtt, ws=ws_server,
                 device_id=body.deviceId, location=body.location,
+                data_reader=data_reader,
             )
 
             if not result["ok"] and intent.get("intent") == "command":
@@ -70,6 +71,7 @@ def create_chat_router(sqlite, redis_client, ws_server, ollama) -> APIRouter:
                             chunk["intent"], source="chat", message=body.message,
                             sqlite=sqlite, redis=redis_client, mqtt=mqtt, ws=ws_server,
                             device_id=body.deviceId, location=body.location,
+                            data_reader=data_reader,
                         )
                         yield f"data: {json.dumps({'type': 'done', **result})}\n\n"
             except Exception as e:

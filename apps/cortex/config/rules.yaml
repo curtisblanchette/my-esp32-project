@@ -53,6 +53,39 @@ rules:
       value: true
       reason: "It's getting dry, consider watering soon."
 
+  # Phase 1: Trend-aware rules
+  - name: rising_temp_preemptive
+    description: "Preemptive cooling when temperature is high and rising during daytime"
+    condition:
+      sensor: temp1
+      operator: ">"
+      threshold: 22
+      trend: rising
+      trend_window_minutes: 15
+      time_of_day:
+        after: "08:00"
+        before: "22:00"
+      duration_seconds: 30
+    action:
+      target: relay1
+      action: set
+      value: true
+      reason: "Temperature rising during daytime — preemptive cooling"
+
+  - name: falling_temp_save_energy
+    description: "Turn off fan when temperature is falling and below comfort threshold"
+    condition:
+      sensor: temp1
+      operator: "<"
+      threshold: 23
+      trend: falling
+      duration_seconds: 60
+    action:
+      target: relay1
+      action: set
+      value: false
+      reason: "Temperature falling below comfort zone — energy saving"
+
 # LLM escalation settings
 llm:
   enabled: true

@@ -129,6 +129,93 @@ def analyze_metric(
     )
 
 
+# ── Decision Loop Trend Analysis ─────────────────────────────────────
+# Fast trend context for the orchestrator — no anomaly detection overhead.
+
+
+@dataclass
+class TrendContext:
+    """Trend analysis result for the decision engine context."""
+    metric: str
+    trend: str             # "rising" | "falling" | "stable"
+    rate_of_change: float  # units per minute (positive = rising)
+    current_value: float
+    mean_30m: float
+    std_dev_30m: float
+    min_30m: float
+    max_30m: float
+
+
+def calculate_rate_of_change(
+    values: list[float],
+    timestamps: list[int],
+) -> float:
+    """
+    Calculate rate of change in units per minute via linear regression.
+    Returns positive for rising, negative for falling.
+    """
+    if len(values) < 2:
+        return 0.0
+
+    n = len(values)
+    # Convert timestamps to minutes relative to first
+    t_min = [(ts - timestamps[0]) / 60_000.0 for ts in timestamps]
+
+    # Linear regression slope
+    sum_t = sum(t_min)
+    sum_v = sum(values)
+    sum_tv = sum(t * v for t, v in zip(t_min, values))
+    sum_t2 = sum(t * t for t in t_min)
+
+    denominator = n * sum_t2 - sum_t * sum_t
+    if denominator == 0:
+        return 0.0
+
+    slope = (n * sum_tv - sum_t * sum_v) / denominator
+    return round(slope, 4)
+
+
+def build_trend_context(
+    metric: str,
+    values: list[float],
+    timestamps: list[int],
+) -> TrendContext | None:
+    """
+    Build a TrendContext for a single metric from recent readings.
+    Designed for the decision engine — fast, no anomaly detection.
+    """
+    if not values or len(values) < 3:
+        return None
+
+    stats = calculate_stats(values)
+    rate = calculate_rate_of_change(values, timestamps)
+
+    # Rate must exceed noise floor to count as a trend
+    if stats.std_dev > 0:
+        if abs(rate) < stats.std_dev * 0.1:
+            trend = "stable"
+        elif rate > 0:
+            trend = "rising"
+        else:
+            trend = "falling"
+    else:
+        trend = "stable"
+
+    return TrendContext(
+        metric=metric,
+        trend=trend,
+        rate_of_change=rate,
+        current_value=values[-1],
+        mean_30m=stats.mean,
+        std_dev_30m=stats.std_dev,
+        min_30m=stats.min,
+        max_30m=stats.max,
+    )
+
+
+# ── On-Demand Analysis ──────────────────────────────────────────────
+
+
 def analyze_sensor_data(
     metric: str,
     redis_readings: list[RedisReading],

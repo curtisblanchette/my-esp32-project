@@ -19,7 +19,7 @@ class SynthesizeRequest(BaseModel):
     message: str
 
 
-def create_voice_router(sqlite, redis_client, ws_server, ollama, voice_service) -> APIRouter:
+def create_voice_router(sqlite, redis_client, ws_server, ollama, voice_service, data_reader=None) -> APIRouter:
     r = APIRouter()
 
     @r.post("/transcribe")
@@ -73,6 +73,7 @@ def create_voice_router(sqlite, redis_client, ws_server, ollama, voice_service) 
             result = await execute_intent(
                 intent, source="voice", message=text,
                 sqlite=sqlite, redis=redis_client, mqtt=mqtt, ws=ws_server,
+                data_reader=data_reader,
             )
 
             return {

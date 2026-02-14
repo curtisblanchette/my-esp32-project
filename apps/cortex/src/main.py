@@ -235,6 +235,7 @@ class Orchestrator:
                 if context:
                     enriched["_trends"] = context.get("trends", {})
                     enriched["_baselines"] = context.get("baselines", {})
+                    enriched["_forecasts"] = context.get("forecasts", {})
                     enriched["_effectiveness"] = context.get("effectiveness", {})
                 self.ollama.analyze_async(
                     telemetry,
@@ -292,6 +293,27 @@ class Orchestrator:
                     "current": hum_trend.current_value,
                 }
 
+            # Phase 3: Build forecast data for each sensor
+            from .services.forecaster import linear_forecast, ewma_forecast
+
+            forecasts = {}
+            if temp_trend:
+                forecasts["temp1"] = {
+                    "rate": temp_trend.rate_of_change,
+                    "current": temp_trend.current_value,
+                    "predicted_10m": linear_forecast(temp_values, temp_ts, 10.0),
+                    "predicted_15m": linear_forecast(temp_values, temp_ts, 15.0),
+                    "ewma": ewma_forecast(temp_values),
+                }
+            if hum_trend:
+                forecasts["hum1"] = {
+                    "rate": hum_trend.rate_of_change,
+                    "current": hum_trend.current_value,
+                    "predicted_10m": linear_forecast(hum_values, hum_ts, 10.0),
+                    "predicted_15m": linear_forecast(hum_values, hum_ts, 15.0),
+                    "ewma": ewma_forecast(hum_values),
+                }
+
             # Get baselines for current hour
             baselines = {}
             if self._memory:
@@ -325,6 +347,7 @@ class Orchestrator:
             self._context_cache = {
                 "trends": trends,
                 "baselines": baselines,
+                "forecasts": forecasts,
                 "effectiveness": effectiveness,
                 "built_at": now,
             }
@@ -333,6 +356,14 @@ class Orchestrator:
             if trends:
                 parts = [f"{k}={v['trend']}({v['rate']:+.3f}/min)" for k, v in trends.items()]
                 logger.debug(f"Context built: {', '.join(parts)}")
+            if forecasts:
+                parts = [
+                    f"{k}: {v.get('predicted_10m', '?'):.1f} in 10m"
+                    for k, v in forecasts.items()
+                    if v.get("predicted_10m") is not None
+                ]
+                if parts:
+                    logger.debug(f"Forecasts: {', '.join(parts)}")
 
             return self._context_cache
 

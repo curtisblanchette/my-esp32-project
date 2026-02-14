@@ -12,7 +12,8 @@ AI operates on two independent paths that converge on MQTT as a shared command b
 
 - **[Configuration-driven devices](#device-registry)** — declare sensors and actuators in `registry.json`, flash, and go
 - **[Dynamic dashboard](#web-dashboard)** — device panels, controls, and charts generated from device capabilities
-- **[Autonomous rules engine](#ai-orchestrator)** — YAML-defined thresholds with trend conditions, time-of-day windows, duration guards, cooldowns, and LLM escalation
+- **[Autonomous rules engine](#ai-prefrontal)** — YAML-defined thresholds with trend conditions, time-of-day windows, duration guards, cooldowns, and LLM escalation
+- **[Predictive forecasting](#how-it-works)** — linear projection and EWMA smoothing to act before thresholds are breached
 - **[Baseline learning](#how-it-works)** — per-device, per-hour baselines for "unusual for this time of day" detection
 - **[Outcome tracking](#how-it-works)** — commands correlated with sensor effects, effectiveness scored and fed back to LLM
 - **[Natural language control](#voice--chat-processing-pipeline)** — chat and voice commands interpreted by Ollama into structured intents
@@ -563,11 +564,11 @@ Cortex includes an autonomous decision engine that monitors sensor readings and 
 
 ```mermaid
 flowchart TB
-    Start([Telemetry Received]) --> Context[Build Context<br/>trends + baselines<br/>cached 30s]
-    Context --> Rules{Rules Match?<br/>threshold + trend<br/>+ time-of-day}
+    Start([Telemetry Received]) --> Context[Build Context<br/>trends + baselines + forecasts<br/>cached 30s]
+    Context --> Rules{Rules Match?<br/>threshold + trend<br/>+ forecast + baseline deviation<br/>+ time-of-day}
     Rules -->|Yes| Execute[Execute Command<br/>+ OutcomeTracker pre-snapshot]
     Rules -->|No| Escalate{LLM<br/>Escalation<br/>Trigger?}
-    Escalate -->|Yes| LLM[Ollama Analysis<br/>enriched with trends<br/>+ baseline deviations<br/>+ past effectiveness]
+    Escalate -->|Yes| LLM[Ollama Analysis<br/>enriched with trends<br/>+ forecasts + baselines<br/>+ past effectiveness]
     Escalate -->|No| Post[Post-processing]
     LLM --> Decision{Command<br/>Generated?}
     Decision -->|Yes| Execute
@@ -581,9 +582,9 @@ flowchart TB
 
 ### How It Works
 
-1. **Context Building** - Each telemetry message triggers a context build (cached 30s): `DataReader` merges Redis+SQLite readings, `analysis.py` computes trend direction and rate-of-change, `CortexMemory` provides hourly baselines for deviation detection
-2. **Rules Engine** - Threshold-based rules with duration/cooldown support, extended with trend conditions (`rising`/`falling`/`stable`) and time-of-day windows
-3. **LLM Escalation** - Complex patterns escalate to Ollama with enriched context (trend analysis, baseline sigma deviations, past command effectiveness)
+1. **Context Building** - Each telemetry message triggers a context build (cached 30s): `DataReader` merges Redis+SQLite readings, `analysis.py` computes trend direction and rate-of-change, `forecaster.py` projects future values via linear regression and EWMA, `CortexMemory` provides hourly baselines for deviation detection
+2. **Rules Engine** - Threshold-based rules with duration/cooldown support, extended with trend conditions (`rising`/`falling`/`stable`), time-of-day windows, forecast conditions (`will_exceed`/`will_drop_below`), and baseline deviation triggers
+3. **LLM Escalation** - Complex patterns escalate to Ollama with enriched context (trend analysis, forecasts, baseline sigma deviations, past command effectiveness)
 4. **Outcome Tracking** - After a command fires, `OutcomeTracker` snapshots sensor state, checks at 1m/5m/10m intervals, and scores effectiveness (-1.0 to +1.0). Results persist to SQLite and feed back into LLM prompts
 5. **Baseline Learning** - Per-device, per-sensor, per-hour baselines accumulate incrementally via Welford's online algorithm, enabling "unusual for this time of day" detection
 6. **Direct MQTT** - AI subscribes to telemetry and publishes commands directly
@@ -655,6 +656,10 @@ llm:
 | `trend` | string | (Optional) Required trend direction: `rising`, `falling`, `stable` |
 | `trend_window_minutes` | int | (Optional) Window for trend analysis (default: 30) |
 | `time_of_day` | object | (Optional) `{after: "HH:MM", before: "HH:MM"}` — supports overnight ranges |
+| `forecast` | string | (Optional) `will_exceed` or `will_drop_below` — predictive condition (Phase 3) |
+| `forecast_threshold` | number | (Optional) Value the forecast is checked against |
+| `forecast_within_minutes` | number | (Optional) Time horizon for prediction (default: 15) |
+| `baseline_deviation` | number | (Optional) Trigger when abs(deviation) >= N standard deviations from baseline |
 
 ### Command Flow
 
@@ -723,7 +728,7 @@ cd apps/cortex
 pytest tests/ -m "not e2e" -v
 ```
 
-Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, cooldowns, YAML loading, LLM escalation), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries).
+Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, forecast conditions, baseline deviation, cooldowns, YAML loading, LLM escalation), `forecaster.py` (linear forecast, EWMA, breach detection, baseline deviation), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries).
 
 #### E2E Simulation Tests (requires running stack)
 ```bash

@@ -49,7 +49,7 @@ ESP32 (MicroPython) → MQTT → Cortex (Python/FastAPI) → Redis (HOT) + SQLit
 - `analysis.py` computes `TrendContext` (rate-of-change via linear regression, trend direction)
 - `CortexMemory` tracks per-device, per-sensor, per-hour baselines (Welford's online algorithm)
 - Orchestrator caches context for 30 seconds, passes to rules engine and LLM escalation
-- Rules support `trend` ("rising"/"falling"/"stable") and `time_of_day` conditions
+- Rules support `trend` ("rising"/"falling"/"stable"), `time_of_day`, `forecast`, and `baseline_deviation` conditions
 
 **Outcome Tracking (Phase 2):**
 - `OutcomeTracker` correlates commands with their measurable sensor effects
@@ -57,6 +57,14 @@ ESP32 (MicroPython) → MQTT → Cortex (Python/FastAPI) → Redis (HOT) + SQLit
 - Effectiveness scored from -1.0 (made it worse) to +1.0 (strong improvement), weighted across intervals (20%/50%/30%)
 - Target metric and desired direction inferred from command `reason` string keywords
 - Completed outcomes persist to `cortex_outcomes` table; effectiveness summaries feed into LLM prompts
+
+**Forecasting (Phase 3):**
+- `forecaster.py` provides pure utility functions: `linear_forecast`, `will_exceed`, `will_drop_below`, `ewma_forecast`, `baseline_deviation`
+- Linear forecast projects sensor values using rate-of-change from linear regression
+- EWMA smoothing for noisy sensors (humidity) before forecasting
+- Rules engine supports `forecast` ("will_exceed"/"will_drop_below") with `forecast_threshold` and `forecast_within_minutes`
+- Rules engine supports `baseline_deviation` to trigger on abnormal values (N standard deviations from hourly baseline)
+- Forecast data (predicted values at 10m/15m, EWMA, rate) included in context cache and LLM prompts
 
 **Voice & Chat Architecture:**
 
@@ -171,16 +179,18 @@ flowchart TB
 - `apps/cortex/src/services/data_reader.py` - Unified Redis+SQLite telemetry read layer
 - `apps/cortex/src/services/cortex_memory.py` - Per-device hourly baseline tracking (Welford's algorithm)
 - `apps/cortex/src/services/background_jobs.py` - Aggregation (Redis→SQLite) + command expiration
-- `apps/cortex/src/services/decision_engine.py` - Rules engine with trend/time-of-day conditions + LLM escalation
+- `apps/cortex/src/services/decision_engine.py` - Rules engine with trend/time-of-day/forecast/baseline-deviation conditions + LLM escalation
+- `apps/cortex/src/services/forecaster.py` - Sensor forecasting: linear projection, EWMA smoothing, breach prediction, baseline deviation (Phase 3)
 - `apps/cortex/src/services/outcome_tracker.py` - Command outcome tracking, effectiveness scoring (Phase 2)
 - `apps/cortex/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
 - `apps/cortex/src/api/` - REST route handlers (telemetry, devices, relays, commands, events, chat, voice)
-- `apps/cortex/config/rules.yaml` - Automation rules
+- `apps/cortex/config/rules.yaml` - Automation rules (threshold, trend, forecast, baseline deviation)
 - `apps/cortex/tests/conftest.py` - Test fixtures (sqlite_db, mock_redis, telemetry_factory)
 - `apps/cortex/tests/test_analysis.py` - Unit tests: stats, trends, rate-of-change
 - `apps/cortex/tests/test_cortex_memory.py` - Unit tests: baseline tracking (Welford's)
 - `apps/cortex/tests/test_data_reader.py` - Unit tests: Redis+SQLite merge layer
-- `apps/cortex/tests/test_decision_engine.py` - Unit tests: rules, trend/time-of-day conditions
+- `apps/cortex/tests/test_decision_engine.py` - Unit tests: rules, trend/time-of-day/forecast/baseline conditions
+- `apps/cortex/tests/test_forecaster.py` - Unit tests: linear forecast, EWMA, breach detection, baseline deviation
 - `apps/cortex/tests/test_outcome_tracker.py` - Unit tests: outcome tracking, scoring, lifecycle
 - `apps/cortex/tests/test_e2e_flow.py` - E2E tests: MQTT→API→Storage flow (requires running services)
 

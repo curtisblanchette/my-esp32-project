@@ -25,6 +25,11 @@ class RuleCondition:
     trend: str | None = None            # "rising" | "falling" | "stable"
     trend_window_minutes: int = 30
     time_of_day: dict | None = None     # {"after": "08:00", "before": "22:00"}
+    # Phase 3: forecast and baseline conditions
+    forecast: str | None = None               # "will_exceed" | "will_drop_below"
+    forecast_threshold: float | None = None
+    forecast_within_minutes: float = 15.0
+    baseline_deviation: float | None = None   # trigger when abs(deviation) >= N stddevs
 
 
 @dataclass
@@ -78,12 +83,16 @@ class DecisionEngine:
                 description=rule_data.get("description", ""),
                 condition=RuleCondition(
                     sensor=condition_data.get("sensor", ""),
-                    operator=condition_data.get("operator", ">"),
+                    operator=condition_data.get("operator", ">="),
                     threshold=condition_data.get("threshold", 0),
                     duration_seconds=condition_data.get("duration_seconds", 0),
                     trend=condition_data.get("trend"),
                     trend_window_minutes=condition_data.get("trend_window_minutes", 30),
                     time_of_day=condition_data.get("time_of_day"),
+                    forecast=condition_data.get("forecast"),
+                    forecast_threshold=condition_data.get("forecast_threshold"),
+                    forecast_within_minutes=condition_data.get("forecast_within_minutes", 15.0),
+                    baseline_deviation=condition_data.get("baseline_deviation"),
                 ),
                 action=RuleAction(
                     target=action_data.get("target", ""),
@@ -141,6 +150,48 @@ class DecisionEngine:
             # Check time-of-day condition (Phase 1)
             if condition_met and rule.condition.time_of_day:
                 condition_met = self._check_time_of_day(rule.condition.time_of_day)
+
+            # Check forecast condition (Phase 3)
+            if condition_met and rule.condition.forecast:
+                if not context:
+                    condition_met = False
+                else:
+                    forecast_data = context.get("forecasts", {}).get(rule.condition.sensor)
+                    if forecast_data and rule.condition.forecast_threshold is not None:
+                        rate = forecast_data.get("rate", 0.0)
+                        current = forecast_data.get("current", 0.0)
+                        threshold = rule.condition.forecast_threshold
+                        horizon = rule.condition.forecast_within_minutes
+
+                        if rule.condition.forecast == "will_exceed":
+                            if current >= threshold:
+                                condition_met = True
+                            elif rate <= 0:
+                                condition_met = False
+                            else:
+                                condition_met = ((threshold - current) / rate) <= horizon
+                        elif rule.condition.forecast == "will_drop_below":
+                            if current <= threshold:
+                                condition_met = True
+                            elif rate >= 0:
+                                condition_met = False
+                            else:
+                                condition_met = ((current - threshold) / abs(rate)) <= horizon
+                        else:
+                            condition_met = False
+                    else:
+                        condition_met = False
+
+            # Check baseline deviation condition (Phase 3)
+            if condition_met and rule.condition.baseline_deviation is not None:
+                if not context:
+                    condition_met = False
+                else:
+                    baseline_data = context.get("baselines", {}).get(rule.condition.sensor)
+                    if baseline_data and baseline_data.get("deviation") is not None:
+                        condition_met = abs(baseline_data["deviation"]) >= rule.condition.baseline_deviation
+                    else:
+                        condition_met = False
 
             if condition_met:
                 # Track when condition started being met

@@ -86,6 +86,58 @@ rules:
       value: false
       reason: "Temperature falling below comfort zone — energy saving"
 
+  # Phase 3: Predictive rules
+  - name: preemptive_cooling
+    description: "Start fan before temperature reaches critical threshold"
+    condition:
+      sensor: temp1
+      operator: ">="
+      threshold: 0
+      forecast: will_exceed
+      forecast_threshold: 28
+      forecast_within_minutes: 15
+    action:
+      target: relay1
+      action: set
+      value: true
+      reason: "Predicted temp will exceed 28°C within 15 minutes — preemptive cooling"
+
+  - name: abnormal_nighttime_heat
+    description: "Alert when temperature is unusually high for nighttime"
+    condition:
+      sensor: temp1
+      operator: ">="
+      threshold: 0
+      baseline_deviation: 2.0
+      time_of_day:
+        after: "22:00"
+        before: "06:00"
+      duration_seconds: 60
+    action:
+      target: relay1
+      action: set
+      value: true
+      reason: "Temperature abnormally high for this time of night"
+
+  - name: morning_humidity_preempt
+    description: "Preempt morning humidity spike based on forecast"
+    condition:
+      sensor: hum1
+      operator: ">="
+      threshold: 0
+      forecast: will_exceed
+      forecast_threshold: 65
+      forecast_within_minutes: 20
+      trend: rising
+      time_of_day:
+        after: "06:00"
+        before: "10:00"
+    action:
+      target: relay1
+      action: set
+      value: true
+      reason: "Morning humidity rising toward 65% — preemptive ventilation"
+
 # LLM escalation settings
 llm:
   enabled: true

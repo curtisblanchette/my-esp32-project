@@ -157,6 +157,25 @@ class OllamaClient:
                     f"({pct}% effective, {samples} samples)"
                 )
 
+        # Format forecast data (Phase 3)
+        forecast_str = ""
+        forecasts = context.pop("_forecasts", None) if context else None
+        if forecasts:
+            forecast_str = "\nSensor forecasts (linear projection from recent data):"
+            for sensor, data in forecasts.items():
+                unit = "°C" if "temp" in sensor else "%"
+                current = data.get("current", 0)
+                predicted_10m = data.get("predicted_10m")
+                predicted_15m = data.get("predicted_15m")
+                rate = data.get("rate", 0)
+                if predicted_10m is not None:
+                    forecast_str += (
+                        f"\n  - {sensor}: current={current:.1f}{unit}, "
+                        f"10min={predicted_10m:.1f}{unit}, "
+                        f"15min={predicted_15m:.1f}{unit} "
+                        f"(rate: {rate:+.2f}{unit}/min)"
+                    )
+
         # Format sensor state context
         context_str = ""
         if context:
@@ -178,12 +197,13 @@ class OllamaClient:
 
         prompt = f"""Current sensor readings from {telemetry.device_id} at {telemetry.location}:
 {readings_str}
-{trend_str}{baseline_str}{effectiveness_str}{f"\n\nSensor states:{context_str}" if context_str else ""}{commands_str}
+{trend_str}{baseline_str}{effectiveness_str}{forecast_str}{f"\n\nSensor states:{context_str}" if context_str else ""}{commands_str}
 
 Based on these readings, should any action be taken? Consider:
 1. Is the temperature comfortable (18-26°C is typical comfort range)?
 2. Is humidity at a reasonable level (30-60% is typical)?
 3. Are there any concerning trends or deviations from baseline?
+4. Are forecasts predicting any threshold breaches in the next 10-15 minutes?
 
 Respond with JSON only."""
 

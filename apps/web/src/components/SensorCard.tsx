@@ -100,27 +100,31 @@ export function SensorCard(props: SensorCardProps): React.ReactElement {
       </div>
 
       {/* Shared Timeline Controls */}
-      <div className="border-t border-panel-border pt-4">
+      <div className="border-t border-panel-border pt-4 w-full">
         <div className="flex items-baseline justify-between gap-3 mb-3">
           <div className="opacity-80 text-xs tracking-wider">Timeline</div>
           <div className="opacity-75 text-xs">{historySub}</div>
         </div>
 
-        <div className="flex justify-center mb-4">
-          <div className="flex flex-wrap justify-center">
-            {dateRangePresets.map((preset) => (
-              <button
-                key={preset}
-                className={`px-3 py-1.5 border text-xs font-medium cursor-pointer transition-all duration-200 rounded-md ${
+        <div className="mb-4">
+          <div className="flex">
+            {dateRangePresets.map((preset, index) => {
+              const isFirst = index === 0;
+              const isLast = index === dateRangePresets.length - 1;
+              const roundedClass = isFirst ? "rounded-l-md" : isLast ? "rounded-r-md" : "rounded-none";
+
+              return (<button
+                key={ preset }
+                className={ `flex-1 px-3 py-1.5 border text-xs font-medium cursor-pointer transition-all duration-200 ${roundedClass} ${
                   dateRangePreset === preset
                     ? "bg-blue-500/20 border-blue-500/50 text-blue-500 font-semibold"
                     : "border-panel-border bg-gray-500/[0.08] hover:bg-gray-500/[0.15] hover:border-gray-500/40"
-                }`}
-                onClick={() => setDateRangePreset(preset)}
+                }` }
+                onClick={ () => setDateRangePreset(preset) }
               >
-                {preset === "custom" ? "Custom" : preset.toUpperCase()}
-              </button>
-            ))}
+                { preset === "custom" ? "Custom" : preset.toUpperCase() }
+              </button>);
+            })}
           </div>
         </div>
 
@@ -148,7 +152,7 @@ export function SensorCard(props: SensorCardProps): React.ReactElement {
         )}
 
         {/* Charts side by side */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
           <div className="relative w-full h-[clamp(140px,20vh,200px)]">
             <MetricChart
               data={tempChartData}

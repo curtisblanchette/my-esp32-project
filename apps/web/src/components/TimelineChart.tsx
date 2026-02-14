@@ -97,7 +97,9 @@ export function TimelineChart(props: {
               max: axisRange.max,
               grid: { color: "rgba(127, 127, 127, 0.18)" },
               ticks: {
-                maxTicksLimit: 7,
+                maxTicksLimit: 5,
+                maxRotation: 0,
+                autoSkip: true,
                 callback: (value) => fmtTimeShort(Number(value)),
               },
             },

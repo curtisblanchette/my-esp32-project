@@ -87,7 +87,9 @@ export function MetricChart(props: MetricChartProps): React.ReactElement {
               max: axisRange.max,
               grid: { color: "rgba(127, 127, 127, 0.18)" },
               ticks: {
-                maxTicksLimit: 5,
+                maxTicksLimit: 4,
+                maxRotation: 0,
+                autoSkip: true,
                 callback: (value) => fmtTimeShort(Number(value)),
               },
             },

@@ -34,10 +34,17 @@ This is an IoT telemetry dashboard for ESP32 sensor monitoring with relay contro
 ```
 ESP32 (MicroPython) → MQTT → Cortex (Python/FastAPI) → Redis (HOT) + SQLite (COLD)
                          ↓                           → WebSocket → React Dashboard
-                   Rules Engine + Ollama LLM
+                   Rules Engine (trend + baseline context) + Ollama LLM
                          ↓
                    MQTT Commands → ESP32
 ```
+
+**Decision Context (Phase 1):**
+- `DataReader` merges Redis (hot) + SQLite (cold) into unified sorted readings
+- `analysis.py` computes `TrendContext` (rate-of-change via linear regression, trend direction)
+- `CortexMemory` tracks per-device, per-sensor, per-hour baselines (Welford's online algorithm)
+- Orchestrator caches context for 30 seconds, passes to rules engine and LLM escalation
+- Rules support `trend` ("rising"/"falling"/"stable") and `time_of_day` conditions
 
 **Voice & Chat Architecture:**
 
@@ -83,7 +90,8 @@ flowchart TB
 **Storage Strategy:**
 - **Redis** - Raw readings with 48-hour TTL (HOT data)
 - **SQLite** - Aggregated historical data (COLD data)
-- Cortex merges both sources when querying history
+- `DataReader` merges both sources for queries and decision context
+- `cortex_baselines` table stores learned per-hour sensor baselines
 
 **MQTT Topics:**
 - `home/{location}/{deviceId}/telemetry` - Sensor readings (Device → Server)
@@ -145,9 +153,11 @@ flowchart TB
 - `apps/cortex/src/services/websocket_server.py` - WebSocket server + broadcast functions
 - `apps/cortex/src/services/ollama_client.py` - Ollama LLM client (chat intents + decision engine)
 - `apps/cortex/src/services/intent_executor.py` - Shared intent executor for chat + voice routes
-- `apps/cortex/src/services/analysis.py` - Sensor data analysis and formatting
+- `apps/cortex/src/services/analysis.py` - Sensor data analysis, trend context, rate-of-change
+- `apps/cortex/src/services/data_reader.py` - Unified Redis+SQLite telemetry read layer
+- `apps/cortex/src/services/cortex_memory.py` - Per-device hourly baseline tracking (Welford's algorithm)
 - `apps/cortex/src/services/background_jobs.py` - Aggregation (Redis→SQLite) + command expiration
-- `apps/cortex/src/services/decision_engine.py` - Rules engine + LLM escalation
+- `apps/cortex/src/services/decision_engine.py` - Rules engine with trend/time-of-day conditions + LLM escalation
 - `apps/cortex/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
 - `apps/cortex/src/api/` - REST route handlers (telemetry, devices, relays, commands, events, chat, voice)
 - `apps/cortex/config/rules.yaml` - Automation rules

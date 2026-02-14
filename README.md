@@ -12,7 +12,8 @@ AI operates on two independent paths that converge on MQTT as a shared command b
 
 - **[Configuration-driven devices](#device-registry)** — declare sensors and actuators in `registry.json`, flash, and go
 - **[Dynamic dashboard](#web-dashboard)** — device panels, controls, and charts generated from device capabilities
-- **[Autonomous rules engine](#ai-orchestrator)** — YAML-defined thresholds with duration guards, cooldowns, and LLM escalation
+- **[Autonomous rules engine](#ai-orchestrator)** — YAML-defined thresholds with trend conditions, time-of-day windows, duration guards, cooldowns, and LLM escalation
+- **[Baseline learning](#how-it-works)** — per-device, per-hour baselines for "unusual for this time of day" detection
 - **[Natural language control](#voice--chat-processing-pipeline)** — chat and voice commands interpreted by Ollama into structured intents
 - **HOT data** stored in [Redis](#redis) (48-hour retention)
 - **COLD data** aggregated in [SQLite](#sqlite) (historical trends)
@@ -498,6 +499,7 @@ flowchart TB
 | `command` | Command history with status |
 | `event` | Device events log |
 | `device` | Device registry with actuator state and display order |
+| `cortex_baselines` | Per-device, per-sensor, per-hour learned baselines (Welford's algorithm) |
 
 ### Cortex Backend
 - **Purpose:** Unified backend — REST API, WebSocket, MQTT client, rules engine, voice
@@ -553,25 +555,29 @@ Cortex includes an autonomous decision engine that monitors sensor readings and 
 
 ```mermaid
 flowchart TB
-    Start([Telemetry Received]) --> Rules{Rules<br/>Match?}
+    Start([Telemetry Received]) --> Context[Build Context<br/>trends + baselines<br/>cached 30s]
+    Context --> Rules{Rules Match?<br/>threshold + trend<br/>+ time-of-day}
     Rules -->|Yes| Execute[Execute Command]
     Rules -->|No| Escalate{LLM<br/>Escalation<br/>Trigger?}
-    Escalate -->|No| End([No Action])
-    Escalate -->|Yes| LLM[Ollama Analysis]
+    Escalate -->|No| Baseline[Update Baselines]
+    Escalate -->|Yes| LLM[Ollama Analysis<br/>enriched with trends<br/>+ baseline deviations]
     LLM --> Decision{Command<br/>Generated?}
     Decision -->|Yes| Execute
-    Decision -->|No| End
+    Decision -->|No| Baseline
     Execute --> Publish[Publish to MQTT]
     Publish --> Track[Track in Recent Commands]
-    Track --> End
+    Track --> Baseline
+    Baseline --> End([Done])
 ```
 
 ### How It Works
 
-1. **Rules Engine** - Fast threshold-based rules with duration and cooldown support
-2. **LLM Escalation** - Complex patterns (e.g., rapid temperature changes) escalate to Ollama
-3. **Direct MQTT** - AI subscribes to telemetry and publishes commands directly
-4. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
+1. **Context Building** - Each telemetry message triggers a context build (cached 30s): `DataReader` merges Redis+SQLite readings, `analysis.py` computes trend direction and rate-of-change, `CortexMemory` provides hourly baselines for deviation detection
+2. **Rules Engine** - Threshold-based rules with duration/cooldown support, extended with trend conditions (`rising`/`falling`/`stable`) and time-of-day windows
+3. **LLM Escalation** - Complex patterns escalate to Ollama with enriched context (trend analysis, baseline sigma deviations)
+4. **Baseline Learning** - Per-device, per-sensor, per-hour baselines accumulate incrementally via Welford's online algorithm, enabling "unusual for this time of day" detection
+5. **Direct MQTT** - AI subscribes to telemetry and publishes commands directly
+6. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
 
 ### Configuration
 
@@ -605,11 +611,40 @@ rules:
       value: false
       reason: "Temperature dropped below 25°C"
 
+  # Trend-aware rules (Phase 1)
+  - name: "rising_temp_preemptive"
+    description: "Preemptive cooling when temperature is rising during daytime"
+    condition:
+      sensor: "temp1"
+      operator: ">"
+      threshold: 22
+      trend: "rising"
+      trend_window_minutes: 15
+      time_of_day: { after: "08:00", before: "22:00" }
+      duration_seconds: 30
+    action:
+      target: "relay1"
+      action: "set"
+      value: true
+      reason: "Temperature rising during daytime — preemptive cooling"
+
 llm:
   enabled: true
   escalation_triggers:
     - rapid_change: 5  # degrees per minute
 ```
+
+**Rule Condition Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sensor` | string | Sensor ID to monitor (e.g., `temp1`, `hum1`) |
+| `operator` | string | Comparison: `>`, `<`, `>=`, `<=`, `==` |
+| `threshold` | number | Value to compare against |
+| `duration_seconds` | int | Condition must hold for this long before firing |
+| `trend` | string | (Optional) Required trend direction: `rising`, `falling`, `stable` |
+| `trend_window_minutes` | int | (Optional) Window for trend analysis (default: 30) |
+| `time_of_day` | object | (Optional) `{after: "HH:MM", before: "HH:MM"}` — supports overnight ranges |
 
 ### Command Flow
 

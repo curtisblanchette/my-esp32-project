@@ -20,4 +20,4 @@ apps/web/dist/
 
 # Local data
 apps/api/data/
-apps/ai/models/
+apps/cortex/models/

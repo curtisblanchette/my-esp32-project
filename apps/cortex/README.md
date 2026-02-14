@@ -143,7 +143,7 @@ llm:
 ## Project Structure
 
 ```
-apps/ai/
+apps/cortex/
 ├── config/
 │   └── rules.yaml              # Automation rules
 ├── models/                     # ML models (gitignored)

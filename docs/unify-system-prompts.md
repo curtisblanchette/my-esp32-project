@@ -6,14 +6,14 @@ Ensure all user-facing interfaces (web chat, voice commands) use the same full-f
 ## Current State
 Three separate system prompts exist:
 1. **`apps/api/src/services/ollama.ts:59-112`** — Full-featured, dynamic (devices from DB, current readings, all intents)
-2. **`apps/ai/src/api.py:259-266`** — Hardcoded, limited (only relay1)
-3. **`apps/ai/src/services/ollama_client.py:16-32`** — Conservative, automation-focused (keep as-is)
+2. **`apps/cortex/src/api.py:259-266`** — Hardcoded, limited (only relay1)
+3. **`apps/cortex/src/services/ollama_client.py:16-32`** — Conservative, automation-focused (keep as-is)
 
 ## Change
 
 ### Update Python `api.py` to delegate to Node.js API
 
-**File:** `apps/ai/src/api.py`
+**File:** `apps/cortex/src/api.py`
 
 Replace `_process_with_llm()` function (lines 255-286) to call Node.js API instead of Ollama directly:
 
@@ -45,14 +45,14 @@ def _process_with_llm(user_message: str) -> dict:
         return {"action": "none", "response": "I'm having trouble processing that right now."}
 ```
 
-**Note:** `API_URL` already exists in `apps/ai/src/config.py:17` — no config changes needed.
+**Note:** `API_URL` already exists in `apps/cortex/src/config.py:17` — no config changes needed.
 
 ### Keep `ollama_client.py` unchanged
 
 The background automation prompt stays separate and optimization-focused for autonomous decisions.
 
 ## Files to Modify
-- `apps/ai/src/api.py` — Replace `_process_with_llm()` function
+- `apps/cortex/src/api.py` — Replace `_process_with_llm()` function
 
 ## Latency Impact
 - Added network hop: ~1-5ms

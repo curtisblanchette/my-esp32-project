@@ -21,7 +21,7 @@ Use kokoro-onnx's built-in `create_stream()` async generator to stream audio chu
 
 ## Files to Modify
 
-### 1. `apps/ai/src/services/voice_service.py`
+### 1. `apps/cortex/src/services/voice_service.py`
 
 Add async streaming method:
 
@@ -48,7 +48,7 @@ async def synthesize_stream(self, text: str):
         yield audio_int16.tobytes(), sample_rate
 ```
 
-### 2. `apps/ai/src/api.py`
+### 2. `apps/cortex/src/api.py`
 
 Add streaming endpoint:
 

@@ -261,10 +261,10 @@ CREATE TABLE commands (
 ### Phase 3: AI Orchestrator Service ✅
 **Status:** Complete
 
-**New directory:** `apps/ai/`
+**New directory:** `apps/cortex/`
 
 ```
-apps/ai/
+apps/cortex/
 ├── Dockerfile
 ├── requirements.txt
 ├── .env.example
@@ -358,7 +358,7 @@ Question: Temperature rising. What action should be taken?
 
 **Added services:**
 - `ollama` - Local LLM server (ollama/ollama:latest) on port 11434
-- `ai` - Python orchestrator service built from apps/ai/Dockerfile
+- `ai` - Python orchestrator service built from apps/cortex/Dockerfile
 
 **Service dependencies:**
 ```

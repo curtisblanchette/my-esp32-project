@@ -9,7 +9,7 @@ The project currently has a reactive automation system: threshold rules fire whe
 
 The loop: `devices → history → interpretation → decision → command → devices`
 
-Today's biggest gap: **Cortex is blind to history.** It only sees the current MQTT telemetry message. The `API_URL` config exists in `apps/ai/src/config.py` but is never called. The decision engine compares single values against static thresholds. The LLM receives "Historical context" that's really just the last-seen value per sensor.
+Today's biggest gap: **Cortex is blind to history.** It only sees the current MQTT telemetry message. The `API_URL` config exists in `apps/cortex/src/config.py` but is never called. The decision engine compares single values against static thresholds. The LLM receives "Historical context" that's really just the last-seen value per sensor.
 
 **Data access strategy (open decision):** Two viable approaches:
 1. **Direct SQLite read** — Cortex opens `telemetry.sqlite` read-only. Fast, no network hop. WAL mode ensures zero contention with API writes. Cortex never writes to this DB.
@@ -25,7 +25,7 @@ Either way, Cortex writes only to its own `cortex.sqlite` (baselines, outcomes, 
 Write the vision document articulating the Mycelium/Cortex architecture, cybernetic loop, and how this project differs from conventional HA platforms.
 
 ### 1b. Data Reader — Give Cortex eyes on history
-Create `apps/ai/src/services/data_reader.py` — provides Cortex read access to telemetry history, devices, and commands.
+Create `apps/cortex/src/services/data_reader.py` — provides Cortex read access to telemetry history, devices, and commands.
 
 ```
 Methods:
@@ -38,7 +38,7 @@ Methods:
 Implementation behind this interface depends on the data access decision above (direct SQLite or HTTP API). Either way, the consumer code stays the same.
 
 ### 1c. Trend Analyzer
-Create `apps/ai/src/services/trend_analyzer.py` — Python port of the statistical concepts from `apps/api/src/routes/utils/analysis.ts`.
+Create `apps/cortex/src/services/trend_analyzer.py` — Python port of the statistical concepts from `apps/api/src/routes/utils/analysis.ts`.
 
 ```
 Functions:
@@ -49,7 +49,7 @@ Functions:
 ```
 
 ### 1d. Cortex Memory (persistent storage)
-Create `apps/ai/src/services/memory.py` — separate SQLite DB at `apps/ai/data/cortex.sqlite`.
+Create `apps/cortex/src/services/memory.py` — separate SQLite DB at `apps/cortex/data/cortex.sqlite`.
 
 ```
 Tables:
@@ -59,14 +59,14 @@ Tables:
 ```
 
 ### 1e. Evolve the Decision Engine
-Modify `apps/ai/src/services/decision_engine.py`:
+Modify `apps/cortex/src/services/decision_engine.py`:
 - Add `trend`, `trend_window_minutes`, and `time_of_day` fields to `RuleCondition`
 - `evaluate()` accepts an optional `context` dict with trends/baselines/time
 - Parse new condition fields from YAML
 - Check trend + time-of-day when present
 
 ### 1f. Wire into Orchestrator
-Modify `apps/ai/src/main.py`:
+Modify `apps/cortex/src/main.py`:
 - Instantiate `DataReader`, `TrendAnalyzer`, `CortexMemory` in `__init__`
 - Build context before rule evaluation (cached 30s to avoid excessive reads):
   - Read 30min history from SQLite
@@ -76,11 +76,11 @@ Modify `apps/ai/src/main.py`:
 - Update baselines after each telemetry message
 
 ### 1g. Enrich LLM prompts
-Modify `apps/ai/src/services/ollama_client.py`:
+Modify `apps/cortex/src/services/ollama_client.py`:
 - Replace dummy "Historical context" with real trends, rates of change, and baseline comparisons
 
 ### 1h. Add trend-aware rules
-Update `apps/ai/config/rules.yaml` with rules like:
+Update `apps/cortex/config/rules.yaml` with rules like:
 ```yaml
 - name: rising_temp_preemptive
   condition:
@@ -98,9 +98,9 @@ Update `apps/ai/config/rules.yaml` with rules like:
 ```
 
 ### Files changed (Phase 1):
-- **New:** `apps/ai/src/services/data_reader.py`, `apps/ai/src/services/trend_analyzer.py`, `apps/ai/src/services/memory.py`
-- **New:** `apps/ai/data/` directory
-- **Modified:** `apps/ai/src/services/decision_engine.py`, `apps/ai/src/main.py`, `apps/ai/src/services/ollama_client.py`, `apps/ai/src/config.py`, `apps/ai/config/rules.yaml`
+- **New:** `apps/cortex/src/services/data_reader.py`, `apps/cortex/src/services/trend_analyzer.py`, `apps/cortex/src/services/memory.py`
+- **New:** `apps/cortex/data/` directory
+- **Modified:** `apps/cortex/src/services/decision_engine.py`, `apps/cortex/src/main.py`, `apps/cortex/src/services/ollama_client.py`, `apps/cortex/src/config.py`, `apps/cortex/config/rules.yaml`
 - **Modified:** `docs/mycelium-cortex-differentiator.md`
 
 ---
@@ -110,10 +110,10 @@ Update `apps/ai/config/rules.yaml` with rules like:
 Track what happens after commands fire. Did turning on the fan actually lower the temperature?
 
 ### 2a. Data models
-Create `apps/ai/src/models/pattern.py` — dataclasses for `Baseline`, `OutcomeRecord`, `Pattern`.
+Create `apps/cortex/src/models/pattern.py` — dataclasses for `Baseline`, `OutcomeRecord`, `Pattern`.
 
 ### 2b. Outcome Tracker
-Create `apps/ai/src/services/outcome_tracker.py`:
+Create `apps/cortex/src/services/outcome_tracker.py`:
 
 The Outcome Tracker closes the cybernetic loop by correlating **commands** with their **actual effect on sensor readings**. This is the mechanism by which Cortex learns whether its decisions are working.
 
@@ -185,7 +185,7 @@ The Outcome Tracker closes the cybernetic loop by correlating **commands** with 
 - If the device goes offline during tracking, the outcome is scored as 0.0 (unknown)
 
 ### 2c. Wire into Orchestrator
-Modify `apps/ai/src/main.py`:
+Modify `apps/cortex/src/main.py`:
 - Call `outcome_tracker.track_command(command, current_telemetry)` in `_execute_command()`
 - Call `outcome_tracker.check_outcomes()` periodically (every 30s from main loop)
 - Call `outcome_tracker.handle_ack(ack)` in `_handle_ack()`
@@ -197,22 +197,22 @@ GET /api/analysis?deviceId=X&sinceMs=Y&metric=temperature
 ```
 
 ### 2e. Feed effectiveness into LLM
-Modify `apps/ai/src/services/ollama_client.py` to include outcome data:
+Modify `apps/cortex/src/services/ollama_client.py` to include outcome data:
 ```
 Past command effectiveness:
 - relay1 ON when temp > 25: avg -1.8C over 5min (85% effective, 12 samples)
 ```
 
 ### Files changed (Phase 2):
-- **New:** `apps/ai/src/services/outcome_tracker.py`, `apps/ai/src/models/pattern.py`, `apps/api/src/routes/analysis.ts`
-- **Modified:** `apps/ai/src/main.py`, `apps/ai/src/services/ollama_client.py`, `apps/api/src/routes/index.ts`
+- **New:** `apps/cortex/src/services/outcome_tracker.py`, `apps/cortex/src/models/pattern.py`, `apps/api/src/routes/analysis.ts`
+- **Modified:** `apps/cortex/src/main.py`, `apps/cortex/src/services/ollama_client.py`, `apps/api/src/routes/index.ts`
 
 ---
 
 ## Phase 3: Forecasting — Predict, Don't Just React
 
 ### 3a. Forecaster module
-Create `apps/ai/src/services/forecaster.py`:
+Create `apps/cortex/src/services/forecaster.py`:
 
 The Forecaster answers one question: **"Where is this sensor heading?"** It uses recent history (provided by TrendAnalyzer via DataReader) to project future values.
 
@@ -365,21 +365,21 @@ telemetry arrives (e.g., temp1 = 25.4°C)
 - The Forecaster logs its predictions vs actuals so forecast accuracy can be tracked over time (feeds into Phase 4 learning).
 
 ### Files changed (Phase 3):
-- **New:** `apps/ai/src/services/forecaster.py`
-- **Modified:** `apps/ai/src/services/decision_engine.py`, `apps/ai/src/main.py`, `apps/ai/config/rules.yaml`
+- **New:** `apps/cortex/src/services/forecaster.py`
+- **Modified:** `apps/cortex/src/services/decision_engine.py`, `apps/cortex/src/main.py`, `apps/cortex/config/rules.yaml`
 
 ---
 
 ## Phase 4: Adaptive Learning — Cortex Evolves Its Own Rules
 
 ### 4a. Rule Advisor
-Create `apps/ai/src/services/rule_advisor.py`:
+Create `apps/cortex/src/services/rule_advisor.py`:
 - Analyzes outcome data periodically (every 6 hours)
 - Uses LLM to suggest threshold/timing adjustments
 - High-confidence adjustments auto-apply; others require approval
 
 ### 4b. Cortex API endpoints
-Extend `apps/ai/src/api.py`:
+Extend `apps/cortex/src/api.py`:
 ```
 GET  /cortex/status          — system intelligence overview
 GET  /cortex/outcomes         — recent outcome records
@@ -389,15 +389,15 @@ POST /cortex/adjustments/:id  — approve/reject suggestion
 ```
 
 ### Files changed (Phase 4):
-- **New:** `apps/ai/src/services/rule_advisor.py`
-- **Modified:** `apps/ai/src/api.py`, `apps/ai/src/main.py`
+- **New:** `apps/cortex/src/services/rule_advisor.py`
+- **Modified:** `apps/cortex/src/api.py`, `apps/cortex/src/main.py`
 
 ---
 
 ## Phase 5: Multi-Device Coordination (Stretch)
 
 ### 5a. Device Coordinator
-Create `apps/ai/src/services/coordinator.py`:
+Create `apps/cortex/src/services/coordinator.py`:
 - Cross-device correlation detection
 - Rules spanning multiple devices (e.g., "if ANY device temp > 30, turn on ALL fans")
 

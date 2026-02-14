@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `npm run dev` - Vite dev server on port 5173
 - `npm run build` - Production build
 
-**AI Orchestrator (`apps/ai`)**
+**AI Orchestrator (`apps/cortex`)**
 - `python -m src.main` - Run the AI orchestrator
 
 **Device Tools**
@@ -91,7 +91,7 @@ flowchart TB
 **Monorepo Structure:**
 - `apps/api` - Node.js/Express backend with WebSocket + MQTT client
 - `apps/web` - React/Vite dashboard with Chart.js visualizations
-- `apps/ai` - Python orchestrator of rules engine and ollama queries
+- `apps/cortex` - Python orchestrator of rules engine and ollama queries
 - `device/` - MicroPython code for ESP32 sensors
 - `tools/` - Device management shell scripts
 
@@ -174,13 +174,13 @@ flowchart TB
 - `apps/web/src/components/` - UI components (SensorCard, RelayControl, ChatInput, ActivityCenter)
 
 **AI Orchestrator:**
-- `apps/ai/src/main.py` - Entry point + lifecycle
-- `apps/ai/src/api.py` - FastAPI HTTP server (voice endpoints)
-- `apps/ai/src/services/decision_engine.py` - Rules engine + LLM escalation
-- `apps/ai/src/services/mqtt_client.py` - MQTT subscriber/publisher
-- `apps/ai/src/services/ollama_client.py` - LLM integration
-- `apps/ai/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
-- `apps/ai/config/rules.yaml` - Automation rules
+- `apps/cortex/src/main.py` - Entry point + lifecycle
+- `apps/cortex/src/api.py` - FastAPI HTTP server (voice endpoints)
+- `apps/cortex/src/services/decision_engine.py` - Rules engine + LLM escalation
+- `apps/cortex/src/services/mqtt_client.py` - MQTT subscriber/publisher
+- `apps/cortex/src/services/ollama_client.py` - LLM integration
+- `apps/cortex/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
+- `apps/cortex/config/rules.yaml` - Automation rules
 
 **Device:**
 - `device/main.py` - Sensor loop + command handling
@@ -196,7 +196,7 @@ flowchart TB
 - `REDIS_URL` - Redis connection
 - `SQLITE_PATH`, `SQLITE_JOURNAL_MODE` - SQLite config
 - `OLLAMA_URL`, `OLLAMA_MODEL` - Local LLM config
-- `AI_SERVICE_URL` - AI orchestrator URL for voice proxy
+- `CORTEX_SERVICE_URL` - Cortex service URL for voice proxy
 
 **Web:**
 - `VITE_API_PROXY_TARGET` - API proxy target

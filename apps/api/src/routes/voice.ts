@@ -3,7 +3,7 @@ import multer from "multer";
 import { interpretMessage } from "../services/ollama.js";
 import { executeIntent } from "./utils/executeIntent.js";
 
-const AI_SERVICE_URL = process.env.AI_SERVICE_URL || "http://ai:8000";
+const CORTEX_SERVICE_URL = process.env.CORTEX_SERVICE_URL || "http://localhost:8000";
 
 // Configure multer for memory storage (audio files)
 const upload = multer({
@@ -27,7 +27,7 @@ export function createVoiceRouter(): Router {
       const formData = new FormData();
       formData.append("audio", new Blob([new Uint8Array(req.file.buffer)]), req.file.originalname || "audio.wav");
 
-      const response = await fetch(`${AI_SERVICE_URL}/voice/transcribe`, {
+      const response = await fetch(`${CORTEX_SERVICE_URL}/voice/transcribe`, {
         method: "POST",
         body: formData,
       });
@@ -59,7 +59,7 @@ export function createVoiceRouter(): Router {
         return;
       }
 
-      const response = await fetch(`${AI_SERVICE_URL}/voice/synthesize`, {
+      const response = await fetch(`${CORTEX_SERVICE_URL}/voice/synthesize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message }),
@@ -97,7 +97,7 @@ export function createVoiceRouter(): Router {
       const formData = new FormData();
       formData.append("audio", new Blob([new Uint8Array(req.file.buffer)]), req.file.originalname || "audio.wav");
 
-      const transcribeResponse = await fetch(`${AI_SERVICE_URL}/voice/transcribe`, {
+      const transcribeResponse = await fetch(`${CORTEX_SERVICE_URL}/voice/transcribe`, {
         method: "POST",
         body: formData,
       });
@@ -151,7 +151,7 @@ export function createVoiceRouter(): Router {
   // Health check for voice service
   router.get("/health", async (_req: Request, res: Response) => {
     try {
-      const response = await fetch(`${AI_SERVICE_URL}/health`);
+      const response = await fetch(`${CORTEX_SERVICE_URL}/health`);
       if (!response.ok) {
         res.json({ ok: false, service: "voice" });
         return;

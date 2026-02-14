@@ -42,7 +42,7 @@ services:
       SQLITE_JOURNAL_MODE: DELETE
       OLLAMA_URL: http://host.docker.internal:11434
       OLLAMA_MODEL: llama3.2:3b
-      AI_SERVICE_URL: http://host.docker.internal:8000
+      CORTEX_SERVICE_URL: http://host.docker.internal:8000
     ports:
       - "3000:3000"
 
@@ -74,13 +74,13 @@ services:
 
   # ai: (now running natively on host for Piper TTS)
   #   build:
-  #     context: ./apps/ai
+  #     context: ./apps/cortex
   #     dockerfile: Dockerfile
   #   container_name: my-esp32-ai
   #   depends_on:
   #     - mosquitto
   #   volumes:
-  #     - ./apps/ai/config:/app/config:ro
+  #     - ./apps/cortex/config:/app/config:ro
   #     - ai_models:/app/models
   #   environment:
   #     MQTT_HOST: mosquitto

@@ -605,7 +605,7 @@ flowchart TB
 
 ### Configuration
 
-Rules are defined in `apps/ai/config/rules.yaml`:
+Rules are defined in `apps/cortex/config/rules.yaml`:
 
 ```yaml
 rules:
@@ -704,7 +704,7 @@ cd apps/web
 npm run dev
 
 # AI Orchestrator
-cd apps/ai
+cd apps/cortex
 python -m src.main
 ```
 
@@ -767,73 +767,7 @@ while True:
     hub.publish_telemetry([{"id": "temp1", "value": temp}])
 ```
 
-## Project Structure
-```
-├── apps
-│   ├── ai                          # Python AI Orchestrator
-│   │   ├── Dockerfile
-│   │   ├── requirements.txt
-│   │   ├── config
-│   │   │   └── rules.yaml          # Automation rules
-│   │   └── src
-│   │       ├── main.py             # Entry point + orchestrator
-│   │       ├── api.py              # FastAPI HTTP server
-│   │       ├── config.py           # Environment config
-│   │       ├── models
-│   │       │   ├── command.py      # Command + Ack models
-│   │       │   └── telemetry.py    # Telemetry models
-│   │       └── services
-│   │           ├── decision_engine.py  # Rules engine
-│   │           ├── mqtt_client.py      # MQTT subscriber/publisher
-│   │           ├── ollama_client.py    # LLM integration
-│   │           ├── voice_service.py    # STT + TTS
-│   │           └── shared.py           # Singleton services
-│   ├── api                         # Node.js Backend
-│   │   ├── Dockerfile
-│   │   ├── package.json
-│   │   └── src
-│   │       ├── server.ts           # Bootstrap + lifecycle
-│   │       ├── app.ts              # Express app
-│   │       ├── routes/             # API endpoints
-│   │       ├── services/           # MQTT, WebSocket, Ollama
-│   │       └── lib/                # Redis, SQLite clients
-│   └── web                         # React Dashboard
-│       ├── Dockerfile
-│       ├── package.json
-│       └── src
-│           ├── App.tsx             # Main component
-│           ├── api.ts              # API client
-│           ├── components/         # UI components
-│           ├── hooks/              # Custom hooks
-│           └── styles.css          # Tailwind + custom styles
-├── device                          # ESP32 MicroPython
-│   ├── boot.py                     # WiFi connection
-│   ├── main.py                     # Main loop
-│   ├── config.py                   # Device config
-│   ├── lib
-│   │   ├── home_hub.py             # MQTT messaging client
-│   │   ├── led.py                  # LED control
-│   │   ├── wifi.py                 # WiFi management
-│   │   └── sensors/                # Sensor drivers
-│   └── services
-│       ├── mqtt.py                 # MQTT client
-│       └── web.py                  # HTTP client
-├── bin
-│   └── ESP32_GENERIC-*.bin         # MicroPython firmware
-├── data
-│   └── telemetry.sqlite            # SQLite database
-├── mosquitto
-│   └── mosquitto.conf              # MQTT broker config
-├── tools
-│   ├── flash.sh                    # Device flashing
-│   ├── repl.sh                     # Serial console
-│   ├── reset.sh                    # Device reset
-│   ├── start.sh                    # Start all services
-│   └── stop.sh                     # Stop all services
-├── docker-compose.yml
-├── package.json                    # Monorepo root
-└── turbo.json                      # Turborepo config
-```
+
 
 ## Troubleshooting
 

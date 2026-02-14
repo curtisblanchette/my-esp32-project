@@ -30,8 +30,8 @@ export OLLAMA_URL=http://localhost:11434
 export OLLAMA_MODEL=llama3.2:3b
 export API_URL=http://localhost:3000
 
-cd apps/ai
-../../.venv/bin/uvicorn src.api:app --host 0.0.0.0 --port 8000 --reload &
+cd apps/cortex
+../../.venv/bin/uvicorn src.voice_api:app --host 0.0.0.0 --port 8000 --reload &
 AI_PID=$!
 cd ../..
 

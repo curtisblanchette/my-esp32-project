@@ -79,7 +79,7 @@ Both `POST /` and `POST /stream` now call `executeIntent()` instead of inline if
 
 `POST /command` now calls `executeIntent()`. Dead `POST /command/audio` endpoint removed.
 
-### 4. Cleaned up Python `apps/ai/src/api.py` — DONE
+### 4. Cleaned up Python `apps/cortex/src/api.py` — DONE
 
 Removed dead endpoints (`/voice/command`, `/voice/command/audio`, `/chat`), `_process_with_llm()`, `VoiceCommandResponse`, and `ChatResponse` models. Kept `ChatRequest` (used by `/voice/synthesize`). Only active endpoints remain: `/voice/transcribe`, `/voice/synthesize`, `/health`.
 
@@ -101,6 +101,6 @@ While implementing, also added multi-device targeting support:
 | `apps/api/src/routes/utils/executeIntent.ts` | **New** — shared intent executor with `resolveDevice()` | `6bbbe75` |
 | `apps/api/src/routes/chat.ts` | Replaced inline intent logic with `executeIntent()` | `6bbbe75` |
 | `apps/api/src/routes/voice.ts` | Replaced inline intent logic with `executeIntent()`, removed dead endpoint | `6bbbe75` |
-| `apps/ai/src/api.py` | Removed dead endpoints, kept STT/TTS utilities | `6bbbe75` |
+| `apps/cortex/src/api.py` | Removed dead endpoints, kept STT/TTS utilities | `6bbbe75` |
 | `apps/api/src/services/ollama.ts` | Added optional `deviceId` to `OllamaIntent` variants | follow-up |
 | `apps/api/src/services/systemPrompt.ts` | Per-device readings, `deviceId` in intent schemas | follow-up |

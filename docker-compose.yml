@@ -18,41 +18,13 @@ services:
       - redis_data:/data
     command: redis-server --appendonly yes
 
-  api:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    container_name: my-esp32-api
-    depends_on:
-      - mosquitto
-      - redis
-    volumes:
-      - ./apps/api:/workspace/apps/api
-      - api_node_modules:/workspace/apps/api/node_modules
-      - ./data:/workspace/apps/api/data
-    environment:
-      NODE_ENV: development
-      NPM_CONFIG_PRODUCTION: "false"
-      NPM_CONFIG_OMIT: ""
-      PORT: "3000"
-      MQTT_URL: mqtt://mosquitto:1883
-      MQTT_TOPIC_PREFIX: /device
-      REDIS_URL: redis://redis:6379
-      SQLITE_PATH: /workspace/apps/api/data/telemetry.sqlite
-      SQLITE_JOURNAL_MODE: DELETE
-      OLLAMA_URL: http://host.docker.internal:11434
-      OLLAMA_MODEL: llama3.2:3b
-      CORTEX_SERVICE_URL: http://host.docker.internal:8000
-    ports:
-      - "3000:3000"
+  # api: removed — Cortex (Python/FastAPI) now serves the API natively on port 8000
 
   web:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
     container_name: my-esp32-web
-    depends_on:
-      - api
     volumes:
       - ./apps/web:/workspace/apps/web
       - web_node_modules:/workspace/apps/web/node_modules
@@ -60,48 +32,14 @@ services:
       NODE_ENV: development
       NPM_CONFIG_PRODUCTION: "false"
       NPM_CONFIG_OMIT: ""
-      VITE_API_PROXY_TARGET: http://api:3000
+      VITE_API_PROXY_TARGET: http://host.docker.internal:8000
     ports:
       - "5173:5173"
 
-  # ollama: (now running natively on host for Metal GPU acceleration)
-  #   image: ollama/ollama:latest
-  #   container_name: my-esp32-ollama
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-
-  # ai: (now running natively on host for Piper TTS)
-  #   build:
-  #     context: ./apps/cortex
-  #     dockerfile: Dockerfile
-  #   container_name: my-esp32-ai
-  #   depends_on:
-  #     - mosquitto
-  #   volumes:
-  #     - ./apps/cortex/config:/app/config:ro
-  #     - ai_models:/app/models
-  #   environment:
-  #     MQTT_HOST: mosquitto
-  #     MQTT_PORT: "1883"
-  #     OLLAMA_URL: http://host.docker.internal:11434
-  #     OLLAMA_MODEL: llama3.2:3b
-  #     API_URL: http://api:3000
-  #     RULES_PATH: config/rules.yaml
-  #     DEFAULT_DEVICE_ID: esp32-1
-  #     DEFAULT_LOCATION: room1
-  #     HTTP_PORT: "8000"
-  #     VOSK_MODEL_PATH: /app/models/vosk-model-small-en-us-0.15
-  #     PIPER_MODEL_PATH: /app/models/en_US-ryan-high.onnx
-  #   ports:
-  #     - "8000:8000"
-  #   restart: unless-stopped
+  # cortex + ollama run natively on host (Metal GPU for Ollama, native audio for TTS)
 
 volumes:
   mosquitto_data:
   mosquitto_log:
   redis_data:
-  api_node_modules:
   web_node_modules:
-  # ai_models:

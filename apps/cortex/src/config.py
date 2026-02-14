@@ -11,17 +11,19 @@ MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
 
 # Ollama Configuration
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi3:mini")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.2:3b")
 
-# API Configuration (for fetching context)
-API_URL = os.getenv("API_URL", "http://localhost:3000")
+# Storage Configuration
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+SQLITE_PATH = os.getenv("SQLITE_PATH", "data/telemetry.sqlite")
+SQLITE_JOURNAL_MODE = os.getenv("SQLITE_JOURNAL_MODE", "WAL")
 
 # Rules Configuration
 RULES_PATH = os.getenv("RULES_PATH", "config/rules.yaml")
 
 # Device defaults
 DEFAULT_DEVICE_ID = os.getenv("DEFAULT_DEVICE_ID", "esp32-1")
-DEFAULT_LOCATION = os.getenv("DEFAULT_LOCATION", "garage")
+DEFAULT_LOCATION = os.getenv("DEFAULT_LOCATION", "room1")
 
 # Voice Configuration
 VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "models/vosk-model-small-en-us-0.15")

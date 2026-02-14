@@ -4,7 +4,7 @@ import tailwindcss from "@tailwindcss/vite";
 import * as path from "node:path";
 
 export default defineConfig(() => {
-  const apiTarget = process.env.VITE_API_PROXY_TARGET ?? "http://localhost:3000";
+  const apiTarget = process.env.VITE_API_PROXY_TARGET ?? "http://localhost:8000";
 
   return {
     root: __dirname,

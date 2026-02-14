@@ -6,9 +6,9 @@ An open-source framework for building AI-powered IoT systems with ESP32 devices,
 
 On the device side, a configuration-driven MicroPython library handles the complexity of microcontroller development. Define your sensors and actuators in a [JSON registry](#device-registry), and the framework automatically initializes hardware drivers (`SWITCH`, `PULSE`, `TempSensor`), manages WiFi connectivity, establishes [MQTT sessions with birth/will lifecycle messages](#mqtt-message-flow), and exposes a [command handler](#command-flow) — all without writing boilerplate. The `HomeHubClient` abstracts MQTT topic structure, correlation-based command acknowledgments, and telemetry publishing into a simple API, so adding a new device is just a registry entry and a [flash](#device-management).
 
-The same device capabilities that drive the firmware also drive the UI. When a device comes online, its birth message advertises its sensors and actuators to the [API](#api-service), which dynamically builds per-device panels in the [React dashboard](#web-dashboard) — complete with the correct controls for each actuator type (toggle switches, momentary pulse buttons), live sensor gauges, and historical charts. No frontend code changes are needed to support new devices; plug in an ESP32, define it in the registry, and it appears on the dashboard ready to control from anywhere on the local network via WebSocket, chat, or voice.
+The same device capabilities that drive the firmware also drive the UI. When a device comes online, its birth message advertises its sensors and actuators to the [Cortex backend](#cortex-backend), which dynamically builds per-device panels in the [React dashboard](#web-dashboard) — complete with the correct controls for each actuator type (toggle switches, momentary pulse buttons), live sensor gauges, and historical charts. No frontend code changes are needed to support new devices; plug in an ESP32, define it in the registry, and it appears on the dashboard ready to control from anywhere on the local network via WebSocket, chat, or voice.
 
-AI operates on two independent paths that converge on MQTT as a shared command bus. A [Python orchestrator](#ai-orchestrator) subscribes to device telemetry and continuously evaluates a [YAML rules engine](#configuration) — threshold conditions with duration guards and cooldown timers that prevent false positives and rapid toggling. When readings exceed rule boundaries (e.g., temperature above 25°C for 15 seconds), it publishes commands directly to devices without human intervention. For anomalies the rules can't handle, like rapid temperature swings exceeding 5°C per minute, the engine [escalates to a local Ollama LLM](#decision-flow) for reasoning. Separately, the Node.js API interprets natural language from [chat and voice](#voice--chat-processing-pipeline) through the same Ollama model, which returns structured JSON intents (command, query, history, analyze) that are executed identically regardless of input method. Devices don't know whether a command came from a rule, the LLM, or a user — they all arrive as the same [MQTT message](#message-envelope-format-v1).
+AI operates on two independent paths that converge on MQTT as a shared command bus. The [Cortex backend](#cortex-backend) subscribes to device telemetry and continuously evaluates a [YAML rules engine](#configuration) — threshold conditions with duration guards and cooldown timers that prevent false positives and rapid toggling. When readings exceed rule boundaries (e.g., temperature above 25°C for 15 seconds), it publishes commands directly to devices without human intervention. For anomalies the rules can't handle, like rapid temperature swings exceeding 5°C per minute, the engine [escalates to a local Ollama LLM](#decision-flow) for reasoning. The same backend interprets natural language from [chat and voice](#voice--chat-processing-pipeline) through the same Ollama model, which returns structured JSON intents (command, query, history, analyze) that are executed identically regardless of input method. Devices don't know whether a command came from a rule, the LLM, or a user — they all arrive as the same [MQTT message](#message-envelope-format-v1).
 
 - **[Configuration-driven devices](#device-registry)** — declare sensors and actuators in `registry.json`, flash, and go
 - **[Dynamic dashboard](#web-dashboard)** — device panels, controls, and charts generated from device capabilities
@@ -44,16 +44,13 @@ flowchart TB
     subgraph Docker["🐳 Docker Services"]
         MQTT[("🦟 Mosquitto<br/>MQTT Broker<br/>:1883")]
         Redis[("⚡ Redis<br/>HOT Storage<br/>:6381")]
-        SQLite[("📁 SQLite<br/>COLD Storage")]
-        API["🖥️ Node.js API<br/>:3000"]
         WEB["⚛️ React Dashboard<br/>:5173"]
     end
 
     subgraph Host["🖥️ Host Services (Native)"]
-        AI["🤖 AI Orchestrator<br/>Python :8000"]
-        Ollama["🧠 Ollama LLM<br/>:11434"]
-        Vosk["🎤 Vosk STT"]
-        Kokoro["🔊 Kokoro TTS"]
+        Cortex["🧠 Cortex<br/>Python/FastAPI :8000<br/>API + MQTT + Rules + Voice"]
+        SQLite[("📁 SQLite<br/>COLD Storage")]
+        Ollama["🤖 Ollama LLM<br/>:11434"]
     end
 
     subgraph Browser["🌐 Browser"]
@@ -64,19 +61,13 @@ flowchart TB
     MPY --> LED
     MPY <-->|telemetry/commands| MQTT
 
-    MQTT -->|subscribe| API
-    MQTT <-->|subscribe/publish| AI
+    MQTT <-->|subscribe/publish| Cortex
 
-    API --> Redis
-    API --> SQLite
-    API -->|WebSocket| WEB
+    Cortex --> Redis
+    Cortex --> SQLite
+    Cortex --> Ollama
 
-    AI --> Ollama
-    AI --> Vosk
-    AI --> Kokoro
-    AI -->|HTTP proxy| API
-
-    WEB -->|proxy| API
+    WEB -->|proxy| Cortex
     Dashboard <-->|WebSocket + REST| WEB
 ```
 
@@ -92,7 +83,7 @@ flowchart LR
 
     subgraph Processing["⚙️ Processing"]
         MQTT["MQTT<br/>Broker"]
-        API["Node.js<br/>API"]
+        Cortex["Cortex<br/>(FastAPI)"]
         Rules["Rules<br/>Engine"]
         LLM["Ollama<br/>LLM"]
     end
@@ -108,19 +99,19 @@ flowchart LR
     end
 
     ESP32 -->|telemetry| MQTT
-    Voice -->|audio| API
-    UI -->|REST| API
+    Voice -->|audio| Cortex
+    UI -->|REST| Cortex
 
-    MQTT --> API
+    MQTT --> Cortex
     MQTT --> Rules
-    API --> Redis
-    API --> SQLite
+    Cortex --> Redis
+    Cortex --> SQLite
     Rules --> LLM
     Rules --> Commands
 
-    Redis --> API
-    SQLite --> API
-    API --> WS
+    Redis --> Cortex
+    SQLite --> Cortex
+    Cortex --> WS
     Commands --> MQTT
     MQTT --> ESP32
 ```
@@ -131,31 +122,27 @@ flowchart LR
 sequenceDiagram
     participant D as ESP32 Device
     participant M as MQTT Broker
-    participant API as Node.js API
-    participant AI as AI Orchestrator
+    participant C as Cortex (FastAPI)
     participant WS as WebSocket Clients
 
     Note over D,WS: Device Registration (Birth)
     D->>M: home/_registry/{deviceId}/birth
-    M->>API: Device capabilities
-    M->>AI: Device capabilities
-    API->>WS: {type: "devices", data: [...]}
+    M->>C: Device capabilities
+    C->>WS: {type: "devices", data: [...]}
 
     Note over D,WS: Telemetry Flow
     loop Every 5 seconds
         D->>M: home/{location}/{deviceId}/telemetry
-        M->>API: Store in Redis + SQLite
-        M->>AI: Evaluate rules
-        API->>WS: {type: "latest", data: {...}}
+        M->>C: Store in Redis + SQLite, evaluate rules
+        C->>WS: {type: "latest", data: {...}}
     end
 
     Note over D,WS: Command Flow (User or AI)
-    AI->>M: home/{location}/{deviceId}/command
+    C->>M: home/{location}/{deviceId}/command
     M->>D: Execute command
     D->>M: home/{location}/{deviceId}/ack
-    M->>API: Update command status
-    M->>AI: Command acknowledged
-    API->>WS: {type: "relays", data: [...]}
+    M->>C: Update command status
+    C->>WS: {type: "relays", data: [...]}
 ```
 
 ### Service Communication
@@ -165,7 +152,6 @@ flowchart TB
     subgraph Ports["Service Ports"]
         P1883["1883"]
         P6381["6381"]
-        P3000["3000"]
         P5173["5173"]
         P8000["8000"]
         P11434["11434"]
@@ -174,30 +160,26 @@ flowchart TB
     subgraph Services
         MQTT["Mosquitto"]
         Redis["Redis"]
-        API["Node.js API"]
         Web["React Web"]
-        AI["AI Orchestrator"]
+        Cortex["Cortex (FastAPI)"]
         Ollama["Ollama"]
     end
 
     P1883 --- MQTT
     P6381 --- Redis
-    P3000 --- API
     P5173 --- Web
-    P8000 --- AI
+    P8000 --- Cortex
     P11434 --- Ollama
 
-    Web -->|proxy /api/*| API
-    API -->|mqtt://| MQTT
-    API -->|redis://| Redis
-    API -->|proxy /api/voice/*| AI
-    AI -->|mqtt://| MQTT
-    AI -->|http://| Ollama
+    Web -->|proxy /api/* + /ws| Cortex
+    Cortex -->|mqtt://| MQTT
+    Cortex -->|redis://| Redis
+    Cortex -->|http://| Ollama
 ```
 
 ### Voice & Chat Processing Pipeline
 
-Both text chat and voice commands funnel through a shared `executeIntent()` function, ensuring all intents (command, query, history, analyze) are handled identically regardless of input method.
+Both text chat and voice commands funnel through a shared `execute_intent()` function, ensuring all intents (command, query, history, analyze) are handled identically regardless of input method.
 
 ```mermaid
 flowchart TB
@@ -207,17 +189,12 @@ flowchart TB
         TTS["speakResponse()<br/>stripDetail → synthesize"]
     end
 
-    subgraph NodeAPI["Node.js API :3000"]
-        ChatStream["POST /chat/stream<br/>interpretMessageStream()"]
-        VoiceCmd["POST /voice/command<br/>STT → interpretMessage()"]
-        SynthProxy["POST /voice/synthesize<br/>(proxy)"]
+    subgraph Cortex["Cortex (Python/FastAPI :8000)"]
+        ChatStream["POST /chat/stream<br/>interpret_message_stream()"]
+        VoiceCmd["POST /voice/command<br/>STT → interpret_message()"]
+        Synth["POST /voice/synthesize<br/>(Kokoro TTS)"]
 
-        Executor["executeIntent(intent, ctx)<br/>───────────────<br/>command → MQTT + SQLite + WS<br/>query → latest reading<br/>history → fetchHistory + format<br/>analyze → analyzeSensor + format<br/>none → passthrough"]
-    end
-
-    subgraph PythonAI["Python AI Service :8000"]
-        STT["/voice/transcribe<br/>(Vosk STT)"]
-        TTSService["/voice/synthesize<br/>(Kokoro TTS)"]
+        Executor["execute_intent(intent, ctx)<br/>───────────────<br/>command → MQTT + SQLite + WS<br/>query → latest reading<br/>history → fetchHistory + format<br/>analyze → analyzeSensor + format<br/>none → passthrough"]
     end
 
     subgraph Ollama["Ollama :11434"]
@@ -227,13 +204,12 @@ flowchart TB
     TextChat -->|SSE stream| ChatStream
     VoiceBtn -->|audio blob| VoiceCmd
     ChatStream --> LLM
-    VoiceCmd -->|audio| STT
-    STT -->|text| VoiceCmd
+    VoiceCmd -->|Vosk STT| VoiceCmd
     VoiceCmd --> LLM
     ChatStream --> Executor
     VoiceCmd --> Executor
     Executor -->|MQTT + SQLite + WS| Executor
-    TTS --> SynthProxy --> TTSService
+    TTS --> Synth
 ```
 
 ### Message Envelope Format (v1)
@@ -273,9 +249,9 @@ All MQTT messages follow a standardized envelope format:
 - **ESP32 Development Board** with USB connection
 
 ### Software
-- **Docker** and **Docker Compose** - For running the infrastructure stack
-- **Node.js** (v18+) and **npm** - For local development
-- **Python 3** - For device management scripts
+- **Docker** and **Docker Compose** - For running infrastructure (Mosquitto, Redis, Web)
+- **Python 3.11+** - For the Cortex backend and device management scripts
+- **Node.js** (v18+) and **npm** - For web frontend development
 - **mpremote** - MicroPython remote utility for device interaction
   ```bash
   pip install mpremote
@@ -300,23 +276,22 @@ This starts everything:
 |---------|------|---------|---------|
 | **MQTT Broker** (Mosquitto) | `1883` | Docker | Message routing |
 | **Redis** | `6381` | Docker | HOT data (48hr) |
-| **API Server** | `3000` | Docker | REST + WebSocket |
+| **Cortex** | `8000` | Host | REST API + WebSocket + MQTT + Rules + Voice |
 | **Web Dashboard** | `5173` | Docker | React UI |
 | **Ollama** | `11434` | Host (Metal GPU) | LLM inference |
-| **AI Orchestrator** | `8000` | Host (Kokoro TTS) | Rules + Voice |
 
 The script automatically:
 - Starts Ollama and waits for it to be ready
 - Pulls the LLM model (`llama3.2:3b`) if not present
-- Starts the AI Orchestrator
-- Launches Docker services
+- Launches Docker services (Mosquitto, Redis, Web)
+- Starts Cortex and waits for it to be ready
 
 To stop everything:
 ```bash
 ./tools/stop.sh
 ```
 
-> **Note:** AI services run natively on the host for performance reasons (Metal GPU acceleration for Ollama, Kokoro TTS for the orchestrator). The API container connects to them via `host.docker.internal`.
+> **Note:** Cortex and Ollama run natively on the host for performance reasons (Metal GPU acceleration for Ollama, native audio for Kokoro TTS). The web container proxies API requests to the host via `host.docker.internal`.
 
 ### 2. Access the Dashboard
 Open your browser to:
@@ -464,35 +439,29 @@ flowchart TB
         subgraph Network["Bridge Network"]
             MQTT["mosquitto:1883"]
             Redis["redis:6379"]
-            API["api:3000"]
             Web["web:5173"]
         end
     end
 
     subgraph Host["Host Machine"]
+        Cortex["cortex:8000"]
         Ollama["ollama:11434"]
-        AI["ai:8000"]
+        SQLiteDB["./data (SQLite)"]
     end
 
     subgraph Volumes["Persistent Volumes"]
         V1["mosquitto_data"]
         V2["redis_data"]
-        V3["api_node_modules"]
-        V4["./data (SQLite)"]
     end
 
-    API -->|mqtt://mosquitto:1883| MQTT
-    API -->|redis://redis:6379| Redis
-    API -->|host.docker.internal:11434| Ollama
-    API -->|host.docker.internal:8000| AI
-    Web -->|http://api:3000| API
-    AI -->|localhost:1883| MQTT
-    AI -->|localhost:11434| Ollama
+    Cortex -->|mqtt://localhost:1883| MQTT
+    Cortex -->|redis://localhost:6381| Redis
+    Cortex -->|http://localhost:11434| Ollama
+    Cortex --> SQLiteDB
+    Web -->|host.docker.internal:8000| Cortex
 
     MQTT --> V1
     Redis --> V2
-    API --> V3
-    API --> V4
 ```
 
 ### MQTT Message Broker (Mosquitto)
@@ -518,9 +487,8 @@ flowchart TB
 
 ### SQLite
 - **Purpose:** COLD storage for aggregated telemetry data (30-day views)
-- **Location:** `./data/telemetry.sqlite`
-- **Access:** Mounted into API container
-- **Journal Mode:** DELETE (for compatibility)
+- **Location:** `./data/telemetry.sqlite` (managed by Cortex)
+- **Journal Mode:** WAL (for concurrent reads)
 
 **Tables:**
 
@@ -531,10 +499,10 @@ flowchart TB
 | `event` | Device events log |
 | `device` | Device registry with actuator state and display order |
 
-### API Service
-- **Purpose:** REST API for querying telemetry data and managing device state
-- **Technology:** Node.js/TypeScript/Express
-- **Port:** `3000`
+### Cortex Backend
+- **Purpose:** Unified backend — REST API, WebSocket, MQTT client, rules engine, voice
+- **Technology:** Python/FastAPI
+- **Port:** `8000`
 
 **REST Endpoints:**
 
@@ -549,9 +517,11 @@ flowchart TB
 | `/api/commands` | GET/POST | Command history |
 | `/api/events` | GET | Device events log |
 | `/api/chat/stream` | POST | Streaming chat (SSE) |
-| `/api/voice/*` | POST | Voice proxy to AI service |
+| `/api/voice/transcribe` | POST | Audio → Text (Vosk STT) |
+| `/api/voice/synthesize` | POST | Text → Audio (Kokoro TTS) |
+| `/api/voice/command` | POST | Full STT → LLM → execute_intent pipeline |
 
-**WebSocket Endpoint:** `ws://localhost:3000/ws`
+**WebSocket Endpoint:** `ws://localhost:8000/ws`
 
 Message Types:
 - `{type: "latest", data: LatestReading}` - Sensor updates (per device)
@@ -577,7 +547,7 @@ Message Types:
 
 ## AI Orchestrator
 
-A local Python service that monitors sensor readings and automatically controls devices using a hybrid rules + LLM approach.
+Cortex includes an autonomous decision engine that monitors sensor readings and automatically controls devices using a hybrid rules + LLM approach.
 
 ### Decision Flow
 
@@ -645,21 +615,19 @@ llm:
 
 ```mermaid
 sequenceDiagram
-    participant AI as AI Orchestrator
+    participant C as Cortex
     participant M as MQTT Broker
     participant D as ESP32 Device
-    participant API as Node.js API
     participant WS as Dashboard
 
-    AI->>AI: Rule triggered or LLM decision
-    AI->>M: Publish command<br/>home/{loc}/{id}/command
+    C->>C: Rule triggered or LLM decision
+    C->>M: Publish command<br/>home/{loc}/{id}/command
     M->>D: Forward command
     D->>D: Execute (toggle relay)
     D->>M: Publish ack<br/>home/{loc}/{id}/ack
-    M->>AI: Ack received
-    M->>API: Ack received
-    API->>API: Update SQLite
-    API->>WS: Broadcast relay update
+    M->>C: Ack received
+    C->>C: Update SQLite
+    C->>WS: Broadcast relay update
 ```
 
 ### Voice Commands
@@ -680,47 +648,22 @@ The AI service supports voice interaction through a complete STT → LLM → TTS
 
 ### Local Development (without Docker)
 
-#### Install Dependencies
+#### Start Cortex Backend
 ```bash
-npm install
-```
-
-#### Start All Services
-Using Turborepo for parallel execution:
-```bash
-npm run dev
-```
-
-This runs both API and Web in development mode.
-
-#### Individual Services
-```bash
-# API only
-cd apps/api
-npm run dev
-
-# Web only
-cd apps/web
-npm run dev
-
-# AI Orchestrator
 cd apps/cortex
 python -m src.main
 ```
 
-### Build for Production
+#### Start Web Frontend
 ```bash
-npm run build
+cd apps/web
+npm run dev
 ```
 
-### Type Checking
+#### Start All Services
+The start script handles Ollama, Docker infrastructure, and Cortex:
 ```bash
-npm run typecheck
-```
-
-### Linting
-```bash
-npm run lint
+./tools/start.sh
 ```
 
 ### Working with Device Code
@@ -794,19 +737,8 @@ while True:
 #### No Data Appearing in Dashboard
 - Verify ESP32 is connected to WiFi (check serial output)
 - Ensure `mqtt_host` in `registry.json` uses your computer's local IP, not `localhost`
-- Check that API server is running: `curl http://localhost:3000/health`
+- Check that Cortex is running: `curl http://localhost:8000/health`
 - Verify MQTT broker is accessible from ESP32: `mosquitto_pub -h localhost -p 1883 -t test -m "hello"`
-- Check API logs: `docker logs my-esp32-api`
-
-### TypeScript Errors
-```bash
-# Run type checking
-npm run typecheck
-
-# Check individual apps
-cd apps/api && npm run typecheck
-cd apps/web && npm run typecheck
-```
 
 ### Hot Reload Not Working
 - Ensure volumes are correctly mounted in `docker-compose.yml`
@@ -817,11 +749,8 @@ cd apps/web && npm run typecheck
 # Ollama (host-native)
 curl http://localhost:11434/api/tags
 
-# AI Orchestrator (host-native)
+# Cortex (host-native)
 curl http://localhost:8000/health
-
-# API (Docker)
-curl http://localhost:3000/health
 
 # Redis (Docker)
 redis-cli -p 6381 ping
@@ -834,7 +763,7 @@ mosquitto_pub -h localhost -p 1883 -t test -m "hello"
 
 | Symptom | Likely Cause | Solution |
 |---------|--------------|----------|
-| Dashboard shows "Disconnected" | WebSocket connection failed | Check API logs, verify port 3000 |
+| Dashboard shows "Disconnected" | WebSocket connection failed | Check Cortex logs, verify port 8000 |
 | No real-time updates | MQTT not connected | Check Mosquitto logs, verify port 1883 |
 | AI commands not executing | Rules not matching | Check `rules.yaml`, verify sensor IDs |
 | Voice commands not working | STT/TTS models missing | Download Vosk/Kokoro models |

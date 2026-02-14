@@ -4,21 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Development Commands
 
-**Monorepo (root)**
-- `npm run dev` - Start all services (API + Web) in parallel via Turborepo
-- `npm run build` - Build all packages
-- `npm run typecheck` - Type check all TypeScript
-
-**API (`apps/api`)**
-- `npm run dev` - Run with tsx watch
-- `npm run build` - Compile TypeScript to dist/
+**Cortex Backend (`apps/cortex`)**
+- `python -m src.main` - Run the full backend (API + MQTT + rules engine + voice)
+- `uvicorn src.voice_api:app --host 0.0.0.0 --port 8000 --reload` - API server only (no MQTT/rules)
 
 **Web (`apps/web`)**
 - `npm run dev` - Vite dev server on port 5173
 - `npm run build` - Production build
-
-**AI Orchestrator (`apps/cortex`)**
-- `python -m src.main` - Run the AI orchestrator
 
 **Device Tools**
 - `./tools/flash.sh <device-id>` - Upload MicroPython code to ESP32 via mpremote
@@ -28,11 +20,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `./tools/reset.sh` - Soft reset device
 
 **Service Management**
-- `./tools/start.sh` - Start all services (Ollama, AI Orchestrator, Docker stack)
+- `./tools/start.sh` - Start all services (Ollama, Cortex, Docker stack)
 - `./tools/stop.sh` - Stop all services
 
 **Docker**
-- `docker compose up -d` - Start containerized services (API, Web, Redis, Mosquitto)
+- `docker compose up -d` - Start containerized services (Web, Redis, Mosquitto)
 
 ## Architecture
 
@@ -40,16 +32,16 @@ This is an IoT telemetry dashboard for ESP32 sensor monitoring with relay contro
 
 **Data Flow:**
 ```
-ESP32 (MicroPython) → MQTT → API Server → Redis (HOT) + SQLite (COLD)
-                         ↓             → WebSocket → React Dashboard
-                   AI Orchestrator → Ollama LLM
+ESP32 (MicroPython) → MQTT → Cortex (Python/FastAPI) → Redis (HOT) + SQLite (COLD)
+                         ↓                           → WebSocket → React Dashboard
+                   Rules Engine + Ollama LLM
                          ↓
                    MQTT Commands → ESP32
 ```
 
 **Voice & Chat Architecture:**
 
-Both text chat and voice commands funnel through a shared `executeIntent()` function, ensuring all intents are handled identically.
+Both text chat and voice commands funnel through a shared `execute_intent()` function, ensuring all intents are handled identically.
 
 ```mermaid
 flowchart TB
@@ -59,17 +51,12 @@ flowchart TB
         TTS["speakResponse()<br/>stripDetail → synthesize"]
     end
 
-    subgraph NodeAPI["Node.js API :3000"]
-        ChatStream["POST /chat/stream<br/>interpretMessageStream()"]
-        VoiceCmd["POST /voice/command<br/>STT → interpretMessage()"]
-        SynthProxy["POST /voice/synthesize<br/>(proxy)"]
+    subgraph Cortex["Cortex (Python/FastAPI :8000)"]
+        ChatStream["POST /chat/stream<br/>interpret_message_stream()"]
+        VoiceCmd["POST /voice/command<br/>STT → interpret_message()"]
+        Synth["POST /voice/synthesize<br/>(Kokoro TTS)"]
 
-        Executor["executeIntent(intent, ctx)<br/>───────────────<br/>command → MQTT + SQLite + WS<br/>query → latest reading<br/>history → fetchHistory + format<br/>analyze → analyzeSensor + format<br/>none → passthrough"]
-    end
-
-    subgraph PythonAI["Python AI Service :8000"]
-        STT["/voice/transcribe<br/>(Vosk STT)"]
-        TTSService["/voice/synthesize<br/>(Kokoro TTS)"]
+        Executor["execute_intent(intent, ctx)<br/>───────────────<br/>command → MQTT + SQLite + WS<br/>query → latest reading<br/>history → fetchHistory + format<br/>analyze → analyzeSensor + format<br/>none → passthrough"]
     end
 
     subgraph Ollama["Ollama :11434"]
@@ -79,26 +66,24 @@ flowchart TB
     TextChat -->|SSE stream| ChatStream
     VoiceBtn -->|audio blob| VoiceCmd
     ChatStream --> LLM
-    VoiceCmd -->|audio| STT
-    STT -->|text| VoiceCmd
+    VoiceCmd -->|Vosk STT| VoiceCmd
     VoiceCmd --> LLM
     ChatStream --> Executor
     VoiceCmd --> Executor
     Executor -->|MQTT + SQLite + WS| Executor
-    TTS --> SynthProxy --> TTSService
+    TTS --> Synth
 ```
 
 **Monorepo Structure:**
-- `apps/api` - Node.js/Express backend with WebSocket + MQTT client
+- `apps/cortex` - Python/FastAPI unified backend (REST API, WebSocket, MQTT, rules engine, voice, LLM)
 - `apps/web` - React/Vite dashboard with Chart.js visualizations
-- `apps/cortex` - Python orchestrator of rules engine and ollama queries
 - `device/` - MicroPython code for ESP32 sensors
 - `tools/` - Device management shell scripts
 
 **Storage Strategy:**
 - **Redis** - Raw readings with 48-hour TTL (HOT data)
 - **SQLite** - Aggregated historical data (COLD data)
-- API merges both sources when querying history
+- Cortex merges both sources when querying history
 
 **MQTT Topics:**
 - `home/{location}/{deviceId}/telemetry` - Sensor readings (Device → Server)
@@ -135,10 +120,10 @@ flowchart TB
 - `POST /api/chat/stream` - Streaming chat response (SSE)
 - `GET /api/chat/health` - Ollama availability check
 
-**Voice (Proxy to AI Service)**
+**Voice (Direct)**
 - `POST /api/voice/transcribe` - Audio → Text (Vosk STT)
 - `POST /api/voice/synthesize` - Text → Audio (Kokoro TTS)
-- `POST /api/voice/command` - Full STT → LLM → executeIntent pipeline
+- `POST /api/voice/command` - Full STT → LLM → execute_intent pipeline
 
 **WebSocket**
 - WebSocket at `/ws` broadcasts:
@@ -150,19 +135,22 @@ flowchart TB
 
 ## Key Files
 
-**API:**
-- `apps/api/src/server.ts` - Bootstrap HTTP, WebSocket, MQTT, aggregation
-- `apps/api/src/services/mqttTelemetry.ts` - MQTT → Redis + WebSocket broadcast
-- `apps/api/src/services/websocket.ts` - WebSocket server + broadcast functions
-- `apps/api/src/services/ollama.ts` - Ollama LLM client for NLP (`OllamaIntent` type)
-- `apps/api/src/services/systemPrompt.ts` - LLM system prompt with intent schemas
-- `apps/api/src/services/commandExpirationJob.ts` - Command TTL management
-- `apps/api/src/lib/redis.ts` - Redis client with 48hr TTL storage
-- `apps/api/src/lib/sqlite.ts` - SQLite queries, device registry, display order
-- `apps/api/src/routes/` - API endpoint handlers (telemetry, relays, devices, commands, events, chat, voice)
-- `apps/api/src/routes/utils/executeIntent.ts` - Shared intent executor for chat + voice routes
-- `apps/api/src/routes/utils/analysis.ts` - Sensor data analysis and formatting
-- `apps/api/src/routes/utils/timeframe.ts` - Time range preset parsing
+**Cortex Backend:**
+- `apps/cortex/src/main.py` - Entry point: starts API server, MQTT, decision engine
+- `apps/cortex/src/voice_api.py` - Unified FastAPI app (lifespan, routes, WebSocket, health)
+- `apps/cortex/src/config.py` - Environment variable configuration
+- `apps/cortex/src/services/sqlite_client.py` - SQLite schema, migrations, all CRUD queries
+- `apps/cortex/src/services/redis_client.py` - Redis client with 48hr TTL storage
+- `apps/cortex/src/services/mqtt_client.py` - MQTT subscriber/publisher with storage + broadcast
+- `apps/cortex/src/services/websocket_server.py` - WebSocket server + broadcast functions
+- `apps/cortex/src/services/ollama_client.py` - Ollama LLM client (chat intents + decision engine)
+- `apps/cortex/src/services/intent_executor.py` - Shared intent executor for chat + voice routes
+- `apps/cortex/src/services/analysis.py` - Sensor data analysis and formatting
+- `apps/cortex/src/services/background_jobs.py` - Aggregation (Redis→SQLite) + command expiration
+- `apps/cortex/src/services/decision_engine.py` - Rules engine + LLM escalation
+- `apps/cortex/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
+- `apps/cortex/src/api/` - REST route handlers (telemetry, devices, relays, commands, events, chat, voice)
+- `apps/cortex/config/rules.yaml` - Automation rules
 
 **Web:**
 - `apps/web/src/App.tsx` - Main dashboard component
@@ -173,15 +161,6 @@ flowchart TB
 - `apps/web/src/api.ts` - REST + WebSocket client functions
 - `apps/web/src/components/` - UI components (SensorCard, RelayControl, ChatInput, ActivityCenter)
 
-**AI Orchestrator:**
-- `apps/cortex/src/main.py` - Entry point + lifecycle
-- `apps/cortex/src/api.py` - FastAPI HTTP server (voice endpoints)
-- `apps/cortex/src/services/decision_engine.py` - Rules engine + LLM escalation
-- `apps/cortex/src/services/mqtt_client.py` - MQTT subscriber/publisher
-- `apps/cortex/src/services/ollama_client.py` - LLM integration
-- `apps/cortex/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
-- `apps/cortex/config/rules.yaml` - Automation rules
-
 **Device:**
 - `device/main.py` - Sensor loop + command handling
 - `device/boot.py` - WiFi connection on startup
@@ -191,25 +170,19 @@ flowchart TB
 
 ## Environment Variables
 
-**API:**
-- `MQTT_URL`, `MQTT_TOPIC_PREFIX` - MQTT broker config
+**Cortex:**
+- `MQTT_HOST`, `MQTT_PORT` - MQTT broker config
 - `REDIS_URL` - Redis connection
 - `SQLITE_PATH`, `SQLITE_JOURNAL_MODE` - SQLite config
 - `OLLAMA_URL`, `OLLAMA_MODEL` - Local LLM config
-- `CORTEX_SERVICE_URL` - Cortex service URL for voice proxy
-
-**Web:**
-- `VITE_API_PROXY_TARGET` - API proxy target
-
-**AI Orchestrator:**
-- `MQTT_HOST`, `MQTT_PORT` - MQTT broker config
-- `OLLAMA_URL`, `OLLAMA_MODEL` - LLM config
-- `API_URL` - Node.js API URL
-- `HTTP_PORT` - FastAPI server port
+- `HTTP_PORT` - FastAPI server port (default: 8000)
 - `RULES_PATH` - Path to rules.yaml
 - `VOSK_MODEL_PATH` - Vosk STT model path
 - `KOKORO_MODEL_PATH`, `KOKORO_VOICES_PATH` - Kokoro TTS model paths
 - `KOKORO_VOICE`, `KOKORO_SPEED`, `KOKORO_LANG` - Kokoro TTS settings
+
+**Web:**
+- `VITE_API_PROXY_TARGET` - API proxy target (default: http://localhost:8000)
 
 ## Web UI Architecture
 

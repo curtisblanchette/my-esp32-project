@@ -9,13 +9,101 @@ The project currently has a reactive automation system: threshold rules fire whe
 
 The loop: `devices → history → interpretation → decision → command → devices`
 
-Today's biggest gap: **Cortex is blind to history.** It only sees the current MQTT telemetry message. The `API_URL` config exists in `apps/cortex/src/config.py` but is never called. The decision engine compares single values against static thresholds. The LLM receives "Historical context" that's really just the last-seen value per sensor.
+Today's biggest gap: **Cortex is blind to history.** It only sees the current MQTT telemetry message. The decision engine compares single values against static thresholds. The LLM receives "Historical context" that's really just the last-seen value per sensor.
 
-**Data access strategy (open decision):** Two viable approaches:
-1. **Direct SQLite read** — Cortex opens `telemetry.sqlite` read-only. Fast, no network hop. WAL mode ensures zero contention with API writes. Cortex never writes to this DB.
-2. **HTTP via Node.js API** — Cortex calls `GET /api/history`, `/api/latest`, etc. Cleaner separation; `API_URL` config already exists but is unused. Adds network hop + dependency on API being up.
+**Architecture decision: Drop Node.js, consolidate into Python.**
 
-Either way, Cortex writes only to its own `cortex.sqlite` (baselines, outcomes, patterns). This decision can be revisited during implementation.
+The Node.js API (`apps/api`) currently handles MQTT ingestion, Redis/SQLite storage, WebSocket broadcasting, and REST endpoints. But Cortex (Python) duplicates the MQTT client and needs all the same data. Rather than maintain two MQTT clients in two languages with inter-service HTTP calls, we consolidate everything into a single Python backend.
+
+Cortex becomes the entire backend: MQTT, storage, WebSocket, REST API, voice, decision engine. The React dashboard (`apps/web`) is unchanged — it just points to the Python server instead of Node.js.
+
+```
+BEFORE:                              AFTER:
+ESP32 → MQTT → Node.js (store/WS)   ESP32 → MQTT → Cortex (Python)
+              → Cortex (duplicate)              ├─ Redis/SQLite (store)
+React → Node.js API                            ├─ WebSocket (broadcast)
+React → proxy → Cortex (voice)                 ├─ REST API (FastAPI)
+                                               ├─ Decision engine
+                                    React ────► └─ Voice STT/TTS
+```
+
+---
+
+## Phase 0: Consolidate Node.js into Cortex
+
+Port all `apps/api` functionality into `apps/cortex` using FastAPI, then remove `apps/api`.
+
+### 0a. Storage layer
+Create `apps/cortex/src/services/redis_client.py` — port from `apps/api/src/lib/redis.ts`:
+- `store_reading(reading)` — store with 48hr TTL
+- `get_readings_in_range(since_ms, until_ms, device_id?)` — range query via SCAN
+
+Create `apps/cortex/src/services/sqlite_client.py` — port from `apps/api/src/lib/sqlite.ts`:
+- Tables: `sensor_readings`, `commands`, `events`, `devices`
+- All query functions: `insert_reading()`, `query_history()`, `query_commands()`, `query_events()`
+- Device registry: `upsert_device()`, `get_devices()`, `update_device_order()`
+- Command lifecycle: `insert_command()`, `update_command_status()`
+
+### 0b. MQTT client enhancement
+Enhance existing `apps/cortex/src/services/mqtt_client.py`:
+- Add telemetry → Redis + SQLite storage (ported from `mqttTelemetry.ts`)
+- Add command publishing with correlation ID + SQLite audit
+- Add WebSocket broadcast on telemetry/device/relay events
+- Remove legacy `/device/+/telemetry` subscription
+
+### 0c. WebSocket server
+Create `apps/cortex/src/services/websocket_server.py` — port from `apps/api/src/services/websocket.ts`:
+- FastAPI native WebSocket endpoint at `/ws`
+- Broadcast types: `latest`, `devices`, `relays`, `command`, `event`
+- On connect: send current state (latest readings, devices, relays, events, commands)
+
+### 0d. REST API routes
+Create `apps/cortex/src/api/` — port from `apps/api/src/routes/`:
+- `telemetry.py` — `GET /api/latest`, `GET /api/history` (merge Redis + SQLite)
+- `devices.py` — `GET /api/devices`, `GET /api/devices/:id`, `PUT /api/devices/order`
+- `relays.py` — `GET/POST/PATCH/DELETE /api/devices/:id/relays/:relayId`
+- `commands.py` — `GET /api/commands`
+- `events.py` — `GET /api/events`
+- `chat.py` — `POST /api/chat`, `POST /api/chat/stream` (SSE), `GET /api/chat/health`
+- `voice.py` — move existing voice endpoints, remove proxy layer (direct access now)
+
+### 0e. Intent execution
+Create `apps/cortex/src/services/intent_executor.py` — port from `executeIntent.ts`:
+- Shared handler for chat + voice intents
+- Intent types: `command`, `query`, `history`, `analyze`, `none`
+- Commands publish via MQTT + store in SQLite
+
+### 0f. Analysis utilities
+Create `apps/cortex/src/services/analysis.py` — port from `analysis.ts`:
+- `calculate_stats()`, `detect_anomalies()`, `detect_trend()`
+- `analyze_sensor_data()`, `format_analysis_reply()`
+- Timeframe parsing (`1h`, `6h`, `12h`, `24h`, `7d`, `30d`)
+
+### 0g. Background jobs
+Add to `apps/cortex/src/main.py` as asyncio tasks:
+- Aggregation job (Redis → SQLite bucketing, every 10 min)
+- Command expiration job (expire pending commands past TTL)
+
+### 0h. Ollama chat integration
+Enhance existing `apps/cortex/src/services/ollama_client.py`:
+- Add chat intent interpretation (port `interpretMessage()` / `interpretMessageStream()` from `ollama.ts`)
+- Add system prompt with device context and intent schemas (port from `systemPrompt.ts`)
+- Keep existing decision engine escalation support
+
+### 0i. Update web proxy + remove Node.js
+- Update `apps/web/vite.config.ts` proxy target to point to Python (port 8000)
+- Remove `apps/api/` directory entirely
+- Remove Node.js dependencies from root `package.json` (keep only web + turborepo)
+- Update `docker-compose.yml`, `tools/start.sh`, `tools/stop.sh`
+- Update `CLAUDE.md`, `README.md`
+
+### Files changed (Phase 0):
+- **New:** `apps/cortex/src/services/redis_client.py`, `sqlite_client.py`, `websocket_server.py`, `intent_executor.py`, `analysis.py`
+- **New:** `apps/cortex/src/api/` directory with route modules
+- **Enhanced:** `apps/cortex/src/services/mqtt_client.py`, `ollama_client.py`
+- **Enhanced:** `apps/cortex/src/main.py` (bootstrap all services)
+- **Modified:** `apps/web/vite.config.ts`, `docker-compose.yml`, `tools/*.sh`, `CLAUDE.md`, `README.md`
+- **Deleted:** `apps/api/` (entire directory)
 
 ---
 
@@ -24,21 +112,8 @@ Either way, Cortex writes only to its own `cortex.sqlite` (baselines, outcomes, 
 ### 1a. Fill `docs/mycelium-cortex-differentiator.md`
 Write the vision document articulating the Mycelium/Cortex architecture, cybernetic loop, and how this project differs from conventional HA platforms.
 
-### 1b. Data Reader — Give Cortex eyes on history
-Create `apps/cortex/src/services/data_reader.py` — provides Cortex read access to telemetry history, devices, and commands.
-
-```
-Methods:
-  get_history(device_id, since_ms, until_ms, limit?) → list[dict]
-  get_devices() → list[dict]
-  get_commands(since_ms, device_id?) → list[dict]
-  get_latest_reading(device_id?) → dict
-```
-
-Implementation behind this interface depends on the data access decision above (direct SQLite or HTTP API). Either way, the consumer code stays the same.
-
-### 1c. Trend Analyzer
-Create `apps/cortex/src/services/trend_analyzer.py` — Python port of the statistical concepts from `apps/api/src/routes/utils/analysis.ts`.
+### 1b. Trend Analyzer
+Create `apps/cortex/src/services/trend_analyzer.py` — extend the analysis module from Phase 0 with trend-specific features.
 
 ```
 Functions:
@@ -58,28 +133,28 @@ Tables:
   patterns  — device_id, sensor_id, pattern_type, description, confidence, parameters
 ```
 
-### 1e. Evolve the Decision Engine
+### 1d. Evolve the Decision Engine
 Modify `apps/cortex/src/services/decision_engine.py`:
 - Add `trend`, `trend_window_minutes`, and `time_of_day` fields to `RuleCondition`
 - `evaluate()` accepts an optional `context` dict with trends/baselines/time
 - Parse new condition fields from YAML
 - Check trend + time-of-day when present
 
-### 1f. Wire into Orchestrator
+### 1e. Wire into Orchestrator
 Modify `apps/cortex/src/main.py`:
-- Instantiate `DataReader`, `TrendAnalyzer`, `CortexMemory` in `__init__`
-- Build context before rule evaluation (cached 30s to avoid excessive reads):
-  - Read 30min history from SQLite
+- Instantiate `TrendAnalyzer`, `CortexMemory` in `__init__`
+- Build context before rule evaluation (cached 30s):
+  - Read 30min history from SQLite (direct, in-process — no API call)
   - Compute trends and rate-of-change
   - Load baselines from memory
 - Pass context to `engine.evaluate(telemetry, context)`
 - Update baselines after each telemetry message
 
-### 1g. Enrich LLM prompts
+### 1f. Enrich LLM prompts
 Modify `apps/cortex/src/services/ollama_client.py`:
 - Replace dummy "Historical context" with real trends, rates of change, and baseline comparisons
 
-### 1h. Add trend-aware rules
+### 1g. Add trend-aware rules
 Update `apps/cortex/config/rules.yaml` with rules like:
 ```yaml
 - name: rising_temp_preemptive
@@ -98,7 +173,7 @@ Update `apps/cortex/config/rules.yaml` with rules like:
 ```
 
 ### Files changed (Phase 1):
-- **New:** `apps/cortex/src/services/data_reader.py`, `apps/cortex/src/services/trend_analyzer.py`, `apps/cortex/src/services/memory.py`
+- **New:** `apps/cortex/src/services/trend_analyzer.py`, `apps/cortex/src/services/memory.py`
 - **New:** `apps/cortex/data/` directory
 - **Modified:** `apps/cortex/src/services/decision_engine.py`, `apps/cortex/src/main.py`, `apps/cortex/src/services/ollama_client.py`, `apps/cortex/src/config.py`, `apps/cortex/config/rules.yaml`
 - **Modified:** `docs/mycelium-cortex-differentiator.md`
@@ -191,10 +266,7 @@ Modify `apps/cortex/src/main.py`:
 - Call `outcome_tracker.handle_ack(ack)` in `_handle_ack()`
 
 ### 2d. Expose analysis endpoint
-Create `apps/api/src/routes/analysis.ts` — thin REST wrapper around the existing `analyzeSensorData()` function:
-```
-GET /api/analysis?deviceId=X&sinceMs=Y&metric=temperature
-```
+Add `GET /api/analysis?deviceId=X&sinceMs=Y&metric=temperature` route in `apps/cortex/src/api/telemetry.py` using the analysis module.
 
 ### 2e. Feed effectiveness into LLM
 Modify `apps/cortex/src/services/ollama_client.py` to include outcome data:
@@ -204,8 +276,8 @@ Past command effectiveness:
 ```
 
 ### Files changed (Phase 2):
-- **New:** `apps/cortex/src/services/outcome_tracker.py`, `apps/cortex/src/models/pattern.py`, `apps/api/src/routes/analysis.ts`
-- **Modified:** `apps/cortex/src/main.py`, `apps/cortex/src/services/ollama_client.py`, `apps/api/src/routes/index.ts`
+- **New:** `apps/cortex/src/services/outcome_tracker.py`, `apps/cortex/src/models/pattern.py`
+- **Modified:** `apps/cortex/src/main.py`, `apps/cortex/src/services/ollama_client.py`, `apps/cortex/src/api/telemetry.py`
 
 ---
 
@@ -431,17 +503,18 @@ Create `apps/cortex/src/services/coordinator.py`:
 ## Verification
 
 After each phase:
-1. Start services: `npm run dev` (API + Web) and `python -m src.main` (AI orchestrator)
-2. Verify telemetry flows: check AI orchestrator logs for context building
-3. **Phase 1:** Confirm trend data appears in logs and LLM prompts
-4. **Phase 2:** Fire a command manually, verify outcome records appear in `cortex.sqlite`
-5. **Phase 3:** Simulate rising temperature, verify preemptive rule triggers before threshold
-6. **Phase 4:** Check `/cortex/adjustments` endpoint returns suggestions after data accumulates
+1. Start Cortex: `python -m src.main` (from `apps/cortex/`)
+2. Start Web: `npm run dev` (from `apps/web/`)
+3. **Phase 0:** Dashboard loads, shows live telemetry via WebSocket, relay controls work, chat works
+4. **Phase 1:** Trend data appears in logs and LLM prompts
+5. **Phase 2:** Fire a command, verify outcome records appear in `cortex.sqlite`
+6. **Phase 3:** Simulate rising temperature, verify preemptive rule triggers before threshold
+7. **Phase 4:** Check `/cortex/adjustments` endpoint returns suggestions after data accumulates
 
 ---
 
 ## Implementation Order
 
-Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
+Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5
 
-Each phase delivers working value. Phase 1 is the foundation — everything else builds on it. Start there.
+Phase 0 is the consolidation — drop Node.js, make Cortex the sole backend. Everything after builds on that unified foundation.

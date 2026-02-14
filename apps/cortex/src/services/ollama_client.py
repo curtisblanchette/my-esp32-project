@@ -1,5 +1,6 @@
+import json
 import logging
-from typing import Any, Callable
+from typing import Any, AsyncGenerator, Callable, TYPE_CHECKING
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
@@ -8,7 +9,22 @@ from ..config import OLLAMA_URL, OLLAMA_MODEL
 from ..models.telemetry import TelemetryMessage
 from ..models.command import Command
 
+if TYPE_CHECKING:
+    from .sqlite_client import SqliteClient
+    from .websocket_server import WebSocketServer
+
 logger = logging.getLogger(__name__)
+
+
+# ── Chat Intent Types ────────────────────────────────────────────────
+
+OllamaIntent = dict[str, Any]
+# Shape varies by intent type:
+# {"intent": "command", "deviceId": "...", "target": "...", "action": "...", "value": ..., "reply": "..."}
+# {"intent": "query", "deviceId": "...", "sensor": "...", "reply": "..."}
+# {"intent": "history", "deviceId": "...", "timeframe": "...", "category": "...", "reply": "...", "summary": "..."}
+# {"intent": "analyze", "deviceId": "...", "timeframe": "...", "metric": "...", "reply": "...", "summary": "..."}
+# {"intent": "none", "reply": "..."}
 
 # Thread pool for non-blocking LLM calls
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ollama-")
@@ -224,6 +240,187 @@ Respond with JSON only."""
             logger.error(f"Ollama error in generate: {e}")
             raise
 
+    # ── Chat Intent Interpretation ──────────────────────────────────
+
+    def interpret_message(self, message: str, sqlite: "SqliteClient", ws: "WebSocketServer") -> OllamaIntent:
+        """
+        Interpret a chat message and return a structured intent.
+        Ported from apps/api/src/services/ollama.ts interpretMessage().
+        """
+        system_prompt = build_system_prompt(sqlite, ws)
+
+        try:
+            response = self._client.post(
+                f"{self.base_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": message,
+                    "system": system_prompt,
+                    "stream": False,
+                    "format": "json",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            raw = data.get("response", "")
+
+            return _parse_intent(raw)
+
+        except httpx.HTTPError as e:
+            logger.error(f"Ollama HTTP error in interpret_message: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Ollama error in interpret_message: {e}")
+            raise
+
+    async def interpret_message_stream(
+        self, message: str, sqlite: "SqliteClient", ws: "WebSocketServer"
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Stream interpretation of a message — yields partial tokens then final intent.
+        Ported from apps/api/src/services/ollama.ts interpretMessageStream().
+        """
+        system_prompt = build_system_prompt(sqlite, ws)
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": message,
+                    "system": system_prompt,
+                    "stream": True,
+                    "format": "json",
+                },
+            ) as response:
+                response.raise_for_status()
+                full_response = ""
+
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        data = json.loads(line)
+                        token = data.get("response", "")
+                        if token:
+                            full_response += token
+                            yield {"type": "token", "token": token}
+                    except json.JSONDecodeError:
+                        pass
+
+        # Parse the complete response
+        intent = _parse_intent(full_response)
+        yield {"type": "done", "intent": intent}
+
     def close(self):
         """Close the HTTP client."""
         self._client.close()
+
+
+# ── System Prompt Builder ────────────────────────────────────────────
+
+def build_system_prompt(sqlite: "SqliteClient", ws: "WebSocketServer") -> str:
+    """
+    Build dynamic system prompt with device context.
+    Ported from apps/api/src/services/systemPrompt.ts.
+    """
+    devices = sqlite.get_all_devices()
+    latest_by_device = ws.get_all_latest_by_device()
+
+    device_sections = []
+    for d in devices:
+        sensors = "\n".join(
+            f"  - {s.id}: {s.type}" + (f" ({s.name})" if s.name else "")
+            for s in d.capabilities.sensors
+        ) or "  (none)"
+
+        actuators = "\n".join(
+            f"  - {a.id}: {a.type}" + (f" ({a.name})" if a.name else "")
+            for a in d.capabilities.actuators
+        ) or "  (none)"
+
+        status = "online" if d.online else "offline"
+        reading = latest_by_device.get(d.id)
+        if reading:
+            reading_str = f"Current readings: temperature={reading.get('temp', 0):.1f}°C, humidity={reading.get('humidity', 0):.1f}%"
+        else:
+            reading_str = "No sensor data available yet."
+
+        device_sections.append(
+            f"Device: {d.id} ({d.name or d.id}) at {d.location} [{status}]\n"
+            f"Sensors:\n{sensors}\nActuators:\n{actuators}\n{reading_str}"
+        )
+
+    device_list = "\n\n".join(device_sections) if device_sections else "No devices registered yet."
+
+    return f"""You are a smart home assistant for an ESP32-based IoT system. Interpret user requests and respond with JSON only.
+
+{device_list}
+
+IMPORTANT: You must respond with valid JSON only. No additional text.
+IMPORTANT: Always include "deviceId" to specify which device to target. Use the device names and locations listed above to determine the correct device. If the user does not specify a device, infer it from context or ask for clarification.
+
+For actuator commands (turn on/off relays, etc.), respond:
+{{"intent": "command", "deviceId": "<device_id>", "target": "<actuator_id>", "action": "set", "value": <true|false>, "reply": "<friendly response>"}}
+
+For momentary actuators (type: "momentary"), use action "pulse":
+{{"intent": "command", "deviceId": "<device_id>", "target": "<actuator_id>", "action": "pulse", "value": true, "reply": "<friendly response>"}}
+
+For sensor queries (what's the temperature, etc.), respond:
+{{"intent": "query", "deviceId": "<device_id>", "sensor": "<sensor_id>", "reply": "<friendly response with the actual value>"}}
+
+For historical queries (what happened, show me events, recent commands, etc.), respond:
+{{"intent": "history", "deviceId": "<device_id>", "timeframe": "<1h|6h|12h|24h|7d|30d>", "category": "<commands|events|all>", "reply": "<friendly response acknowledging the request>", "summary": "<1-3 sentence spoken summary>"}}
+
+For sensor data analysis (trends, anomalies, spikes, fluctuations, patterns), respond:
+{{"intent": "analyze", "deviceId": "<device_id>", "timeframe": "<1h|6h|12h|24h|7d|30d>", "metric": "<temperature|humidity|all>", "reply": "<friendly response acknowledging the analysis request>", "summary": "<1-3 sentence spoken summary>"}}
+
+For unclear or unrelated requests, respond:
+{{"intent": "none", "reply": "<helpful clarification>"}}
+
+Examples:
+User: "turn on the grow room light"
+{{"intent": "command", "deviceId": "esp32-1", "target": "relay1", "action": "set", "value": true, "reply": "Turning on the grow room light."}}
+
+User: "what's the temperature?"
+{{"intent": "query", "deviceId": "esp32-1", "sensor": "temp1", "reply": "The current temperature is 22.5°C."}}
+
+User: "what happened in the last hour?"
+{{"intent": "history", "deviceId": "esp32-1", "timeframe": "1h", "category": "all", "reply": "Here's what happened in the last hour.", "summary": "A quiet hour with no commands or notable events."}}
+
+User: "any temperature spikes?"
+{{"intent": "analyze", "deviceId": "esp32-1", "timeframe": "24h", "metric": "temperature", "reply": "Let me analyze the temperature data for anomalies.", "summary": "Temperature stayed stable around 22°C with no significant spikes detected."}}"""
+
+
+def _parse_intent(raw: str) -> OllamaIntent:
+    """Parse raw LLM response into a structured intent."""
+    try:
+        logger.info(f"Ollama raw response: {raw}")
+        parsed = json.loads(raw)
+        logger.info(f"Parsed intent: {parsed.get('intent')}")
+
+        if not parsed.get("intent") or not parsed.get("reply"):
+            raise ValueError("Invalid response structure")
+
+        if parsed["intent"] == "command":
+            if not parsed.get("target") or not parsed.get("action"):
+                raise ValueError("Command missing target or action")
+
+        if parsed["intent"] == "analyze" and not parsed.get("timeframe"):
+            parsed["timeframe"] = "24h"
+
+        if parsed["intent"] == "history" and not parsed.get("timeframe"):
+            parsed["timeframe"] = "24h"
+
+        return parsed
+
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.error(f"Failed to parse Ollama response: {raw}, error: {e}")
+        fallback = (
+            f'I received: "{raw[:200]}..." but couldn\'t process it properly. '
+            'Try asking more specifically, like "analyze temperature for the last 24 hours".'
+            if 0 < len(raw) < 500
+            else "I had trouble understanding that. Try asking something like 'analyze temperature spikes in the last 24 hours'."
+        )
+        return {"intent": "none", "reply": fallback}

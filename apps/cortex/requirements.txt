@@ -10,3 +10,5 @@ kokoro-onnx>=0.4.0
 onnxruntime>=1.18.0
 numpy>=1.26.0
 soundfile>=0.12.1
+redis>=5.0.0
+websockets>=13.0

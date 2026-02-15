@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { LatestReading, RelayStatus, Device, DeviceEvent, Command, RuleSuggestion } from "../api";
+import type { LatestReading, RelayStatus, Device, DeviceEvent, Command, RuleSuggestion, CortexRule } from "../api";
 
 type WebSocketMessage =
   | { type: "latest"; data: LatestReading }
@@ -9,7 +9,8 @@ type WebSocketMessage =
   | { type: "event"; data: DeviceEvent }
   | { type: "commands"; data: Command[] }
   | { type: "command"; data: Command }
-  | { type: "suggestions"; data: RuleSuggestion[] };
+  | { type: "suggestions"; data: RuleSuggestion[] }
+  | { type: "rules"; data: CortexRule[] };
 
 interface UseWebSocketOptions {
   onLatestReading?: (reading: LatestReading) => void;
@@ -20,6 +21,7 @@ interface UseWebSocketOptions {
   onCommandsUpdate?: (commands: Command[]) => void;
   onCommandReceived?: (command: Command) => void;
   onSuggestionsUpdate?: (suggestions: RuleSuggestion[]) => void;
+  onRulesUpdate?: (rules: CortexRule[]) => void;
   onError?: (error: Event) => void;
   reconnectInterval?: number;
 }
@@ -34,6 +36,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     onCommandsUpdate,
     onCommandReceived,
     onSuggestionsUpdate,
+    onRulesUpdate,
     onError,
     reconnectInterval = 3000,
   } = options;
@@ -97,6 +100,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
             onCommandReceived(message.data);
           } else if (message.type === "suggestions" && onSuggestionsUpdate) {
             onSuggestionsUpdate(message.data);
+          } else if (message.type === "rules" && onRulesUpdate) {
+            onRulesUpdate(message.data);
           }
         } catch (error) {
           console.error("Error parsing WebSocket message:", error);

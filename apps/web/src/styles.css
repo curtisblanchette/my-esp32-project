@@ -19,12 +19,14 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
   background: radial-gradient(1200px 800px at 20% 0%, rgba(56, 189, 248, 0.12), transparent 60%),
     radial-gradient(900px 700px at 90% 30%, rgba(251, 113, 133, 0.12), transparent 55%);
+  background-attachment: fixed;
 }
 
 @media (max-width: 560px) {
   body {
     background: radial-gradient(1200px 900px at 20% 0%, rgba(56, 189, 248, 0.10), rgba(56, 189, 248, 0.04) 40%, transparent 65%),
       radial-gradient(900px 700px at 90% 30%, rgba(251, 113, 133, 0.12), transparent 55%);
+    background-attachment: fixed;
   }
 }
 

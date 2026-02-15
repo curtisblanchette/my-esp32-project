@@ -23,7 +23,7 @@ function stripDetail(text: string): string {
   return text.replace(/<detail>[\s\S]*?<\/detail>/g, "").trim();
 }
 
-export function ChatInput(): React.ReactElement {
+export function ChatInput({ noBorder }: { noBorder?: boolean } = {}): React.ReactElement {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -77,9 +77,10 @@ export function ChatInput(): React.ReactElement {
   }, []);
 
   useEffect(() => {
-    checkHealth();
+    // Delay initial health check to give Cortex time to start
+    const initial = setTimeout(checkHealth, 3000);
     const interval = setInterval(checkHealth, 30000);
-    return () => clearInterval(interval);
+    return () => { clearTimeout(initial); clearInterval(interval); };
   }, [checkHealth]);
 
   const playAudio = useCallback((audioUrl: string) => {
@@ -353,7 +354,7 @@ export function ChatInput(): React.ReactElement {
   const voiceAvailable = voiceHealth?.stt_available && voiceHealth?.tts_available;
 
   return (
-    <div ref={containerRef} className="border border-panel-border rounded-xl p-4 backdrop-blur-[10px]">
+    <div ref={containerRef} className={`p-4 ${noBorder ? "" : "border border-panel-border rounded-xl backdrop-blur-[10px]"}`}>
       <div
         className="flex items-center justify-between mb-3 cursor-pointer"
         onClick={() => setIsExpanded((prev) => !prev)}

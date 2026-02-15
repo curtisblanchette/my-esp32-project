@@ -12,6 +12,7 @@ threshold changes auto-apply to in-memory rules; others require approval.
 
 import json
 import logging
+import math
 import time
 import uuid
 from typing import Any, TYPE_CHECKING
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 AUTO_APPLY_CONFIDENCE = 0.8
 AUTO_APPLY_FIELDS = {"threshold", "forecast_threshold"}
 OBSERVATION_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000  # 7 days
+SENSOR_TO_METRIC = {"temp1": "temperature", "hum1": "humidity"}
 
 ADVISOR_SYSTEM_PROMPT = """You are analyzing automation rule performance for an IoT sensor monitoring system.
 You will receive rule definitions with their recent outcome data, learned sensor baselines, and human observations.
@@ -113,36 +115,47 @@ class RuleAdvisor:
         baseline_summary = self._collect_baseline_summary()
         observation_summary = self._collect_observation_summary()
 
-        # 2. Skip if insufficient outcome data
+        # 2. Deterministic pre-pass (no LLM needed)
+        deterministic = self._deterministic_gap_analysis(baseline_summary)
+
+        # 3. LLM path (gated on outcome count >= 5 and Ollama availability)
         total_outcomes = sum(rp.get("sample_count", 0) for rp in rule_performance)
-        if total_outcomes < 5:
-            logger.info(f"Rule advisor: insufficient outcome data ({total_outcomes} total), skipping")
+        llm_suggestions: list[dict] = []
+
+        if total_outcomes >= 5 and self._ollama and self._ollama.is_available():
+            prompt = self._build_analysis_prompt(rule_performance, baseline_summary, observation_summary)
+            try:
+                raw = self._ollama.generate(prompt, system=ADVISOR_SYSTEM_PROMPT, format="json")
+                llm_suggestions = self._parse_suggestions(raw)
+            except Exception as e:
+                logger.error(f"Rule advisor LLM call failed: {e}")
+
+        # 4. Merge deterministic + LLM suggestions
+        all_suggestions = self._merge_suggestions(deterministic, llm_suggestions)
+
+        if not all_suggestions:
+            logger.info("Rule advisor: no suggestions")
             return []
 
-        # 3. Build LLM prompt and get suggestions
-        if not self._ollama or not self._ollama.is_available():
-            logger.warning("Rule advisor: Ollama unavailable, skipping")
-            return []
-
-        prompt = self._build_analysis_prompt(rule_performance, baseline_summary, observation_summary)
-        try:
-            raw = self._ollama.generate(prompt, system=ADVISOR_SYSTEM_PROMPT, format="json")
-            suggestions = self._parse_suggestions(raw)
-        except Exception as e:
-            logger.error(f"Rule advisor LLM call failed: {e}")
-            return []
-
-        if not suggestions:
-            logger.info("Rule advisor: no suggestions from LLM")
-            return []
-
-        # 4. Store suggestions, auto-apply high-confidence threshold tweaks
+        # 5. Store suggestions, auto-apply high-confidence threshold tweaks
         stored: list[dict] = []
-        for s in suggestions:
+        for s in all_suggestions:
             # Look up current value from in-memory rules
             current_value = self._get_rule_field_value(s["rule_name"], s["field"])
             if current_value is None:
                 logger.warning(f"Rule advisor: rule '{s['rule_name']}' or field '{s['field']}' not found, skipping")
+                continue
+
+            # Skip no-op suggestions where the value wouldn't actually change
+            # Use rounded comparison to catch floating-point near-matches (e.g., 20.67 vs 20.670000001)
+            if round(current_value, 4) == round(s["suggested_value"], 4):
+                logger.debug(f"Rule advisor: skipping no-op suggestion for {s['rule_name']}.{s['field']} ({current_value} → {s['suggested_value']})")
+                continue
+
+            # Skip duplicate suggestions already applied or pending
+            suggested_json = json.dumps(s["suggested_value"])
+            if self._sqlite.has_duplicate_suggestion(s["rule_name"], s["field"], suggested_json):
+                logger.debug(f"Rule advisor: skipping duplicate suggestion for {s['rule_name']}.{s['field']} → {s['suggested_value']}")
                 continue
 
             suggestion_id = str(uuid.uuid4())
@@ -151,7 +164,7 @@ class RuleAdvisor:
                 rule_name=s["rule_name"],
                 field=s["field"],
                 current_value=json.dumps(current_value),
-                suggested_value=json.dumps(s["suggested_value"]),
+                suggested_value=suggested_json,
                 reason=s["reason"],
                 confidence=s["confidence"],
                 outcome_sample_count=total_outcomes,
@@ -195,6 +208,252 @@ class RuleAdvisor:
         self._sqlite.update_suggestion_status(suggestion_id, "rejected")
         logger.info(f"Rule advisor: rejected suggestion {suggestion_id}")
         return True
+
+    # ── Deterministic Gap Analysis ─────────────────────────────────────
+
+    def _deterministic_gap_analysis(self, baseline_summary: list[dict]) -> list[dict]:
+        """Programmatically compare rule thresholds against learned baselines."""
+        suggestions: list[dict] = []
+        if not baseline_summary:
+            return suggestions
+
+        # Group baselines by metric
+        baselines_by_metric: dict[str, list[dict]] = {}
+        for b in baseline_summary:
+            baselines_by_metric.setdefault(b["metric"], []).append(b)
+
+        for rule in self._engine.rules:
+            if not rule.enabled:
+                continue
+            if rule.condition.scope != "self":
+                continue
+
+            metric = SENSOR_TO_METRIC.get(rule.condition.sensor)
+            if not metric or metric not in baselines_by_metric:
+                continue
+
+            hourly = baselines_by_metric[metric]
+            if not hourly:
+                continue
+
+            total_samples = sum(b["sampleCount"] for b in hourly)
+            if total_samples < 10:
+                continue
+
+            hours_covered = len(hourly)
+            threshold = rule.condition.threshold
+            op = rule.condition.operator
+
+            # --- (a) Unreachable threshold ---
+            unreachable = self._detect_unreachable(rule, hourly, op, threshold, total_samples, hours_covered)
+            if unreachable:
+                suggestions.append(unreachable)
+
+            # --- (b) Too-sensitive threshold ---
+            sensitive = self._detect_too_sensitive(rule, hourly, op, threshold)
+            if sensitive:
+                suggestions.append(sensitive)
+
+            # --- (c) Missing baseline_deviation ---
+            missing_bd = self._detect_missing_baseline_deviation(rule, hourly)
+            if missing_bd:
+                suggestions.append(missing_bd)
+
+            # --- (d) Stale forecast_threshold ---
+            stale_fc = self._detect_stale_forecast(rule, hourly, total_samples, hours_covered)
+            if stale_fc:
+                suggestions.append(stale_fc)
+
+        return suggestions
+
+    def _detect_unreachable(
+        self, rule, hourly: list[dict], op: str, threshold: float,
+        total_samples: int, hours_covered: int,
+    ) -> dict | None:
+        """Threshold beyond avg ± 2σ for ALL hours → unreachable."""
+        # Use a small epsilon to avoid re-triggering on thresholds that are
+        # already very close to the boundary (e.g., from a previous adjustment)
+        _EPS = 0.02
+
+        if op in (">", ">="):
+            upper_bounds = [b["avg"] + 2 * b["stdDev"] for b in hourly]
+            max_upper = max(upper_bounds)
+            if threshold > max_upper + _EPS:
+                # Round DOWN so the suggested value is actually within the reachable range
+                suggested = math.floor(max_upper * 100) / 100
+                if round(suggested, 4) == round(threshold, 4):
+                    return None
+                confidence = min(1.0, total_samples / 500) * 0.6 + min(1.0, hours_covered / 24) * 0.4
+                return {
+                    "rule_name": rule.name,
+                    "field": "threshold",
+                    "suggested_value": suggested,
+                    "reason": f"Threshold {threshold} is unreachable — max baseline upper bound is {max_upper:.2f}",
+                    "confidence": round(confidence, 3),
+                }
+        elif op in ("<", "<="):
+            lower_bounds = [b["avg"] - 2 * b["stdDev"] for b in hourly]
+            min_lower = min(lower_bounds)
+            if threshold < min_lower - _EPS:
+                # Round UP so the suggested value is actually within the reachable range
+                suggested = math.ceil(min_lower * 100) / 100
+                if round(suggested, 4) == round(threshold, 4):
+                    return None
+                confidence = min(1.0, total_samples / 500) * 0.6 + min(1.0, hours_covered / 24) * 0.4
+                return {
+                    "rule_name": rule.name,
+                    "field": "threshold",
+                    "suggested_value": suggested,
+                    "reason": f"Threshold {threshold} is unreachable — min baseline lower bound is {min_lower:.2f}",
+                    "confidence": round(confidence, 3),
+                }
+        return None
+
+    def _detect_too_sensitive(
+        self, rule, hourly: list[dict], op: str, threshold: float,
+    ) -> dict | None:
+        """Threshold within 1σ of the mean for >50% of hours → too sensitive."""
+        if op in (">", ">="):
+            sensitive_hours = sum(1 for b in hourly if threshold <= b["avg"] + b["stdDev"])
+        elif op in ("<", "<="):
+            sensitive_hours = sum(1 for b in hourly if threshold >= b["avg"] - b["stdDev"])
+        else:
+            return None
+
+        sensitive_ratio = sensitive_hours / len(hourly) if hourly else 0
+        if sensitive_ratio <= 0.5:
+            return None
+
+        # Suggest sample-weighted mean of avg ± 2σ
+        total_weight = sum(b["sampleCount"] for b in hourly)
+        if total_weight == 0:
+            return None
+
+        if op in (">", ">="):
+            weighted = sum((b["avg"] + 2 * b["stdDev"]) * b["sampleCount"] for b in hourly) / total_weight
+        else:
+            weighted = sum((b["avg"] - 2 * b["stdDev"]) * b["sampleCount"] for b in hourly) / total_weight
+
+        suggested = round(weighted, 2)
+        if suggested == threshold:
+            return None
+
+        return {
+            "rule_name": rule.name,
+            "field": "threshold",
+            "suggested_value": suggested,
+            "reason": f"Threshold {threshold} is within 1σ of the mean for {sensitive_ratio:.0%} of hours — fires too often",
+            "confidence": round(0.7 * sensitive_ratio, 3),
+        }
+
+    def _detect_missing_baseline_deviation(
+        self, rule, hourly: list[dict],
+    ) -> dict | None:
+        """Stable baselines (CV < 10%) with no baseline_deviation → suggest adding."""
+        if rule.condition.baseline_deviation is not None:
+            return None
+        if rule.condition.threshold == 0:
+            # Rules with threshold=0 are forecast-only or baseline-only
+            return None
+
+        hours_covered = len(hourly)
+        if hours_covered < 12:
+            return None
+
+        # Coefficient of variation across all hours
+        total_samples = sum(b["sampleCount"] for b in hourly)
+        if total_samples == 0:
+            return None
+
+        weighted_avg = sum(b["avg"] * b["sampleCount"] for b in hourly) / total_samples
+        if weighted_avg == 0:
+            return None
+
+        weighted_std = sum(b["stdDev"] * b["sampleCount"] for b in hourly) / total_samples
+        cv = weighted_std / abs(weighted_avg)
+
+        if cv >= 0.10:
+            return None
+
+        return {
+            "rule_name": rule.name,
+            "field": "baseline_deviation",
+            "suggested_value": 2.0,
+            "reason": f"Stable baselines (CV={cv:.1%}) across {hours_covered} hours — baseline deviation can catch anomalies",
+            "confidence": 0.65,
+        }
+
+    def _detect_stale_forecast(
+        self, rule, hourly: list[dict], total_samples: int, hours_covered: int,
+    ) -> dict | None:
+        """Forecast threshold unreachable → suggest adjustment."""
+        if not rule.condition.forecast or rule.condition.forecast_threshold is None:
+            return None
+
+        fc_threshold = rule.condition.forecast_threshold
+        forecast_type = rule.condition.forecast
+        op = ">=" if forecast_type == "will_exceed" else "<="
+
+        _EPS = 0.02
+
+        if op in (">", ">="):
+            upper_bounds = [b["avg"] + 2 * b["stdDev"] for b in hourly]
+            max_upper = max(upper_bounds)
+            if fc_threshold > max_upper + _EPS:
+                suggested = math.floor(max_upper * 100) / 100
+                if round(suggested, 4) == round(fc_threshold, 4):
+                    return None
+                confidence = min(1.0, total_samples / 500) * 0.6 + min(1.0, hours_covered / 24) * 0.4
+                return {
+                    "rule_name": rule.name,
+                    "field": "forecast_threshold",
+                    "suggested_value": suggested,
+                    "reason": f"Forecast threshold {fc_threshold} is unreachable — max baseline upper bound is {max_upper:.2f}",
+                    "confidence": round(confidence, 3),
+                }
+        elif op in ("<", "<="):
+            lower_bounds = [b["avg"] - 2 * b["stdDev"] for b in hourly]
+            min_lower = min(lower_bounds)
+            if fc_threshold < min_lower - _EPS:
+                suggested = math.ceil(min_lower * 100) / 100
+                if round(suggested, 4) == round(fc_threshold, 4):
+                    return None
+                confidence = min(1.0, total_samples / 500) * 0.6 + min(1.0, hours_covered / 24) * 0.4
+                return {
+                    "rule_name": rule.name,
+                    "field": "forecast_threshold",
+                    "suggested_value": suggested,
+                    "reason": f"Forecast threshold {fc_threshold} is unreachable — min baseline lower bound is {min_lower:.2f}",
+                    "confidence": round(confidence, 3),
+                }
+        return None
+
+    def _merge_suggestions(
+        self, deterministic: list[dict], llm: list[dict],
+    ) -> list[dict]:
+        """Deduplicate by (rule_name, field). Higher confidence wins; ties within 0.1 prefer deterministic."""
+        by_key: dict[tuple[str, str], dict] = {}
+        source: dict[tuple[str, str], str] = {}
+
+        for s in deterministic:
+            key = (s["rule_name"], s["field"])
+            by_key[key] = s
+            source[key] = "deterministic"
+
+        for s in llm:
+            key = (s["rule_name"], s["field"])
+            if key not in by_key:
+                by_key[key] = s
+                source[key] = "llm"
+            else:
+                existing = by_key[key]
+                if s["confidence"] > existing["confidence"] + 0.1:
+                    # LLM clearly more confident
+                    by_key[key] = s
+                    source[key] = "llm"
+                # Otherwise keep deterministic (ties within 0.1 prefer deterministic)
+
+        return list(by_key.values())
 
     # ── Data Collection ───────────────────────────────────────────────
 
@@ -419,5 +678,6 @@ Consider whether thresholds are too sensitive or not sensitive enough based on o
             if rule.name == rule_name:
                 if hasattr(rule.condition, field):
                     setattr(rule.condition, field, value)
+                    self._engine.modified_rules.add(rule_name)
                     logger.info(f"Applied rule change: {rule_name}.{field} = {value}")
                 return

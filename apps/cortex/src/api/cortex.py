@@ -1,10 +1,12 @@
 """
-Cortex intelligence API — system status, baselines, rule suggestions.
+Cortex intelligence API — system status, baselines, rule suggestions, rules.
 
-Phase 4 endpoints for monitoring and managing the adaptive learning system.
+Phase 4+6 endpoints for monitoring and managing the adaptive learning system.
 """
 
+from dataclasses import asdict
 from fastapi import APIRouter, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import TYPE_CHECKING
 
@@ -14,10 +16,32 @@ if TYPE_CHECKING:
     from ..services.cortex_memory import CortexMemory
     from ..services.rule_advisor import RuleAdvisor
     from ..services.websocket_server import WebSocketServer
+    from ..services.decision_engine import DecisionEngine
 
 
 class AdjustmentAction(BaseModel):
     action: str  # "approve" or "reject"
+
+
+class RuleToggle(BaseModel):
+    enabled: bool
+
+
+def _serialize_rules(engine: "DecisionEngine") -> list[dict]:
+    """Serialize in-memory rules to JSON-safe dicts."""
+    result = []
+    for rule in engine.rules:
+        condition = asdict(rule.condition)
+        action = asdict(rule.action)
+        result.append({
+            "name": rule.name,
+            "description": rule.description,
+            "enabled": rule.enabled,
+            "condition": condition,
+            "action": action,
+            "modified": rule.name in engine.modified_rules,
+        })
+    return result
 
 
 def create_cortex_router(
@@ -26,6 +50,7 @@ def create_cortex_router(
     memory: "CortexMemory",
     rule_advisor: "RuleAdvisor",
     ws_server: "WebSocketServer | None" = None,
+    engine: "DecisionEngine | None" = None,
 ) -> APIRouter:
     r = APIRouter()
 
@@ -106,5 +131,50 @@ def create_cortex_router(
             await ws_server.broadcast_suggestions(all_suggestions)
 
         return {"ok": True}
+
+    @r.post("/advisor/run")
+    async def run_advisor():
+        """Manually trigger the Rule Advisor."""
+        import asyncio
+        suggestions = await asyncio.to_thread(rule_advisor.analyze)
+        if ws_server:
+            all_suggestions = sqlite.get_suggestions(limit=20)
+            await ws_server.broadcast_suggestions(all_suggestions)
+        return {
+            "ok": True,
+            "suggestions": suggestions or [],
+            "count": len(suggestions) if suggestions else 0,
+        }
+
+    # ── Rules Endpoints (Phase 6: Nerve Center) ───────────────────────
+
+    @r.get("/rules")
+    async def get_rules():
+        """List all in-memory rules with their current state."""
+        if not engine:
+            return {"ok": True, "rules": []}
+        return {"ok": True, "rules": _serialize_rules(engine)}
+
+    @r.patch("/rules/{rule_name}")
+    async def toggle_rule(rule_name: str, body: RuleToggle):
+        """Toggle a rule's enabled state (in-memory only)."""
+        if not engine:
+            return JSONResponse(
+                status_code=404,
+                content={"ok": False, "error": "Decision engine not available"},
+            )
+
+        for rule in engine.rules:
+            if rule.name == rule_name:
+                rule.enabled = body.enabled
+                # Broadcast updated rules
+                if ws_server:
+                    await ws_server.broadcast_rules(_serialize_rules(engine))
+                return {"ok": True}
+
+        return JSONResponse(
+            status_code=404,
+            content={"ok": False, "error": f"Rule '{rule_name}' not found"},
+        )
 
     return r

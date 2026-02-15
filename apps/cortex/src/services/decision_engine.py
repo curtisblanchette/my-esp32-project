@@ -73,6 +73,7 @@ class DecisionEngine:
     rules: list[Rule] = field(default_factory=list)
     sensor_states: dict[str, SensorState] = field(default_factory=dict)
     llm_config: dict[str, Any] = field(default_factory=dict)
+    modified_rules: set[str] = field(default_factory=set)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "DecisionEngine":

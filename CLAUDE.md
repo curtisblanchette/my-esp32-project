@@ -167,11 +167,13 @@ flowchart TB
 **Observations**
 - `POST /api/observations` - Log human observation (`{deviceId, category, notes?}`)
 
-**Cortex Intelligence (Phase 4)**
+**Cortex Intelligence (Phase 4+6)**
 - `GET /api/cortex/status` - System intelligence overview (outcomes, baselines, suggestions counts)
 - `GET /api/cortex/baselines/:deviceId` - Learned hourly baselines for a device
 - `GET /api/cortex/adjustments` - Rule adjustment suggestions (`?status=pending|applied|rejected`)
 - `POST /api/cortex/adjustments/:id` - Approve or reject a suggestion (`{action: "approve"|"reject"}`)
+- `GET /api/cortex/rules` - In-memory rules with enabled/modified state
+- `PATCH /api/cortex/rules/{name}` - Toggle rule enabled state (`{enabled: boolean}`)
 
 **Chat (NLP)**
 - `POST /api/chat` - Process natural language command
@@ -191,6 +193,7 @@ flowchart TB
   - `{type: "commands", data: ...}` - Command history
   - `{type: "events", data: ...}` - Device events
   - `{type: "suggestions", data: ...}` - Rule adjustment suggestions (Phase 4)
+  - `{type: "rules", data: ...}` - Rule states (enabled/disabled/modified) (Phase 6)
 
 ## Key Files
 
@@ -225,14 +228,20 @@ flowchart TB
 - `apps/cortex/tests/test_observations.py` - Unit tests: observation endpoint validation, storage, broadcast
 - `apps/cortex/tests/test_outcome_tracker.py` - Unit tests: outcome tracking, scoring, lifecycle
 - `apps/cortex/tests/test_rule_advisor.py` - Unit tests: rule advisor analysis, auto-apply, approve/reject, LLM parsing
-- `apps/cortex/tests/test_cortex_api.py` - Unit tests: /api/cortex routes (status, baselines, adjustments)
+- `apps/cortex/tests/test_cortex_api.py` - Unit tests: /api/cortex routes (status, baselines, adjustments, rules)
 - `apps/cortex/tests/test_coordinator.py` - Unit tests: cross-device state provider (Phase 5)
 - `apps/cortex/tests/test_cross_device_rules.py` - Unit tests: scope/target_scope rule evaluation, YAML loading, state tracking (Phase 5)
 - `apps/cortex/tests/test_e2e_flow.py` - E2E tests: MQTT→API→Storage flow (requires running services)
 
 **Web:**
-- `apps/web/src/App.tsx` - Main dashboard component
-- `apps/web/src/hooks/useWebSocket.ts` - WebSocket connection with device/event/command handlers
+- `apps/web/src/App.tsx` - App shell with routing, shared state, header navigation
+- `apps/web/src/pages/Dashboard.tsx` - Main dashboard with device panels and drag-and-drop
+- `apps/web/src/pages/NerveCenter.tsx` - Nerve Center page (rules, suggestions, baselines, system health)
+- `apps/web/src/components/NerveCenterOverview.tsx` - System health stats and advisor controls
+- `apps/web/src/components/NerveCenterRules.tsx` - Rule list with enable/disable toggle
+- `apps/web/src/components/NerveCenterSuggestions.tsx` - Suggestion management with approve/reject
+- `apps/web/src/components/NerveCenterBaselines.tsx` - 24h baseline charts per device (Chart.js)
+- `apps/web/src/hooks/useWebSocket.ts` - WebSocket connection with device/event/command/rules handlers
 - `apps/web/src/hooks/useRelays.ts` - Relay state management with offline detection
 - `apps/web/src/hooks/useOptimisticToggle.ts` - Toggle with ack timeout handling
 - `apps/web/src/hooks/useHistory.ts` - History fetching with deviceId filter
@@ -270,19 +279,20 @@ flowchart TB
 - Custom component classes in `@layer components { }` (glass-card, circle, tempCircle, etc.)
 - CSS container queries used (`[container-type:inline-size]`) for responsive gauges
 
-**Layout Structure (App.tsx):**
+**Routing (react-router-dom):**
+- `/` — Dashboard (device panels, drag-and-drop, sensor cards)
+- `/nerve-center` — Nerve Center (rules, suggestions, baselines, system health)
+
+**Layout Structure (App.tsx shell):**
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Activity toggle (fixed top-right)     Drawer (340px, z-30) │
+│  Header: [Nerve Center btn] [Activity toggle]  Drawer(340px)│
 ├─────────────────────────────────────── ┌──────────────────┐ │
-│  Main content (centered, flex-wrap)    │ Recent Activity   │ │
-│  ┌──────────────┐ ┌──────────────┐    │ (slide-out right) │ │
-│  │ DevicePanel   │ │ DevicePanel   │    │                  │ │
-│  │ (drag-sort)   │ │ (drag-sort)   │    └──────────────────┘ │
-│  │ - Drag handle │ │              │                          │
-│  │ - Sensors     │ │              │                          │
-│  │ - Actuators   │ │              │                          │
-│  └──────────────┘ └──────────────┘                          │
+│  <Routes>                              │ Recent Activity   │ │
+│    / → Dashboard (DevicePanels)        │ (slide-out right) │ │
+│    /nerve-center → NerveCenter         │                  │ │
+│      Tabs: Overview|Rules|Suggestions  └──────────────────┘ │
+│            |Baselines                                        │
 ├─────────────────────────────────────────────────────────────┤
 │  ChatInput (fixed bottom, backdrop-blur)                    │
 └─────────────────────────────────────────────────────────────┘
@@ -294,6 +304,8 @@ flowchart TB
 - `apps/web/src/components/DevicePanel.tsx` - Per-device panel with drag-and-drop (via @dnd-kit)
 - `apps/web/src/components/ChatInput.tsx` - AI assistant input
 - `apps/web/src/components/ActivityCenter.tsx` - Activity feed (slide-out drawer)
+- `apps/web/src/components/NerveCenterRules.tsx` - Rule toggle list with category badges
+- `apps/web/src/components/NerveCenterBaselines.tsx` - 24h baseline charts with ±1σ bands
 
 **Drag-and-Drop Notes:**
 - Uses `@dnd-kit/core` + `@dnd-kit/sortable` for panel reordering

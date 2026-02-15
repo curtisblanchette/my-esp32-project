@@ -146,6 +146,10 @@ class WebSocketServer:
         """Broadcast rule adjustment suggestions."""
         await self._broadcast({"type": "suggestions", "data": suggestions})
 
+    async def broadcast_rules(self, rules: list[dict[str, Any]]) -> None:
+        """Broadcast current rule states."""
+        await self._broadcast({"type": "rules", "data": rules})
+
     # ── Internal ─────────────────────────────────────────────────────
 
     def _build_relay_list(self, sqlite: "SqliteClient") -> list[dict]:

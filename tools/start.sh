@@ -2,6 +2,7 @@
 set -e
 
 cd "$(dirname "$0")/.."
+REPO_ROOT="$(pwd)"
 
 echo "Starting Ollama..."
 ollama serve &
@@ -31,7 +32,7 @@ export MQTT_PORT=1883
 export OLLAMA_URL=http://localhost:11434
 export OLLAMA_MODEL=llama3.2:3b
 export REDIS_URL=redis://localhost:6381
-export SQLITE_PATH=data/telemetry.sqlite
+export SQLITE_PATH="$REPO_ROOT/apps/cortex/data/telemetry.sqlite"
 export SQLITE_JOURNAL_MODE=WAL
 export HTTP_PORT=8000
 export VOSK_MODEL_PATH=models/vosk-model-small-en-us-0.15

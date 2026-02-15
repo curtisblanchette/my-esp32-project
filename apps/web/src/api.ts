@@ -411,6 +411,11 @@ export async function fetchDeviceBaselines(
   return Array.isArray(data.baselines) ? data.baselines : [];
 }
 
+export async function runRuleAdvisor(): Promise<{ ok: boolean; count: number }> {
+  const r = await fetch("/api/cortex/advisor/run", { method: "POST" });
+  return (await r.json()) as { ok: boolean; count: number };
+}
+
 export async function resolveAdjustment(
   id: string,
   action: "approve" | "reject",
@@ -419,6 +424,52 @@ export async function resolveAdjustment(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action }),
+  });
+  const data = (await r.json()) as { ok: boolean };
+  return data.ok;
+}
+
+// ── Cortex Rules API (Phase 6: Nerve Center) ────────────────────────
+
+export type CortexRule = {
+  name: string;
+  description: string;
+  enabled: boolean;
+  condition: {
+    sensor: string;
+    operator: string;
+    threshold: number;
+    duration_seconds: number;
+    trend?: string | null;
+    trend_window_minutes: number;
+    time_of_day?: { after: string; before: string } | null;
+    forecast?: string | null;
+    forecast_threshold?: number | null;
+    forecast_within_minutes: number;
+    baseline_deviation?: number | null;
+    scope: string;
+  };
+  action: {
+    target: string;
+    action: string;
+    value: boolean | number | string;
+    reason: string;
+    target_scope: string;
+  };
+  modified: boolean;
+};
+
+export async function fetchRules(signal?: AbortSignal): Promise<CortexRule[]> {
+  const r = await fetch("/api/cortex/rules", { cache: "no-store", signal });
+  const data = (await r.json()) as { ok: boolean; rules: CortexRule[] };
+  return Array.isArray(data.rules) ? data.rules : [];
+}
+
+export async function toggleRule(name: string, enabled: boolean): Promise<boolean> {
+  const r = await fetch(`/api/cortex/rules/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
   });
   const data = (await r.json()) as { ok: boolean };
   return data.ok;

@@ -915,6 +915,19 @@ class SqliteClient:
             "observationContext": row["observation_context"],
         }
 
+    def has_duplicate_suggestion(
+        self, rule_name: str, field: str, suggested_value: str,
+    ) -> bool:
+        """Check if an applied or pending suggestion already exists for this rule+field+value."""
+        db = self._get_db()
+        row = db.execute(
+            "SELECT 1 FROM cortex_suggestions "
+            "WHERE rule_name = ? AND field = ? AND suggested_value = ? "
+            "AND status IN ('applied', 'pending') LIMIT 1",
+            (rule_name, field, suggested_value),
+        ).fetchone()
+        return row is not None
+
     def count_suggestions_by_status(self) -> dict[str, int]:
         db = self._get_db()
         cursor = db.execute(

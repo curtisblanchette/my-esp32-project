@@ -142,7 +142,7 @@ class Orchestrator:
         app.include_router(
             create_cortex_router(
                 sqlite, self._outcome_tracker, self._memory,
-                self._rule_advisor, ws_server,
+                self._rule_advisor, ws_server, self.engine,
             ),
             prefix="/api/cortex",
         )

@@ -18,6 +18,7 @@ AI operates on two independent paths that converge on MQTT as a shared command b
 - **[Outcome tracking](#how-it-works)** — commands correlated with sensor effects, effectiveness scored and fed back to LLM
 - **[Adaptive learning](#how-it-works)** — Rule Advisor analyzes outcome data every 6 hours, uses LLM to suggest threshold/timing adjustments, auto-applies high-confidence changes
 - **[Multi-device coordination](#how-it-works)** — cross-device rules with `scope` (read from any/all devices) and `target_scope` (send to all/specific devices)
+- **[Nerve Center](#web-dashboard)** — dedicated control page for viewing/toggling rules, managing suggestions, inspecting baselines, and monitoring system health
 - **Human observation logging** — log plant-health events sensors can't detect (mold, pests, wilting) via the Activity Center
 - **[Natural language control](#voice--chat-processing-pipeline)** — chat and voice commands interpreted by Ollama into structured intents
 - **HOT data** stored in [Redis](#redis) (48-hour retention)
@@ -536,6 +537,8 @@ flowchart TB
 | `/api/cortex/baselines/:id` | GET | Learned hourly baselines for a device |
 | `/api/cortex/adjustments` | GET | Rule adjustment suggestions (`?status=pending\|applied\|rejected`) |
 | `/api/cortex/adjustments/:id` | POST | Approve or reject a suggestion |
+| `/api/cortex/rules` | GET | In-memory rules with enabled/modified state |
+| `/api/cortex/rules/{name}` | PATCH | Toggle rule enabled state |
 | `/api/chat/stream` | POST | Streaming chat (SSE) |
 | `/api/voice/transcribe` | POST | Audio → Text (Vosk STT) |
 | `/api/voice/synthesize` | POST | Text → Audio (Kokoro TTS) |
@@ -552,11 +555,13 @@ Message Types:
 - `{type: "events", data: DeviceEvent[]}` - Device events
 - `{type: "event", data: DeviceEvent}` - Single event broadcast
 - `{type: "suggestions", data: RuleSuggestion[]}` - Rule adjustment suggestions
+- `{type: "rules", data: CortexRule[]}` - Rule states (enabled/disabled/modified)
 
 ### Web Dashboard
 - **Purpose:** React SPA for visualizing telemetry data
 - **Technology:** React + Vite + TypeScript + Tailwind CSS
 - **Port:** `5173`
+- **Routing:** `react-router-dom` — `/` (Dashboard), `/nerve-center` (Nerve Center)
 - **Features:**
   - Real-time metric cards with circular gauges
   - Time-series charts (Chart.js)
@@ -564,6 +569,11 @@ Message Types:
   - Drag-and-drop device panel reordering (persisted)
   - AI status indicator and activity feed (slide-out drawer) with rule suggestion approve/reject
   - Human observation logging (mold, pests, wilting, etc.) via Activity Center
+  - **Nerve Center** — dedicated Cortex control page with tabs:
+    - **Overview**: system health stats, advisor controls, pending suggestions
+    - **Rules**: view/toggle all automation rules with category badges and detail expansion
+    - **Suggestions**: filterable approve/reject interface for rule adjustments
+    - **Baselines**: 24h sensor baseline charts with ±1σ bands per device
   - Voice command input
   - Responsive design with container queries
 
@@ -768,7 +778,7 @@ cd apps/cortex
 pytest tests/ -m "not e2e" -v
 ```
 
-Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, forecast conditions, baseline deviation, cooldowns, YAML loading, LLM escalation), `forecaster.py` (linear forecast, EWMA, breach detection, baseline deviation), `observations.py` (endpoint validation, storage, broadcast), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries), `rule_advisor.py` (LLM analysis, auto-apply, approve/reject, confidence gating, observation correlation), `cortex_api.py` (status, baselines, adjustments endpoints), `coordinator.py` (cross-device state queries, actuator lookups), `cross_device_rules.py` (scope any/all/self/device_id, target_scope all/self/device_id, shared state tracking, YAML loading).
+Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, forecast conditions, baseline deviation, cooldowns, YAML loading, LLM escalation), `forecaster.py` (linear forecast, EWMA, breach detection, baseline deviation), `observations.py` (endpoint validation, storage, broadcast), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries), `rule_advisor.py` (LLM analysis, auto-apply, approve/reject, confidence gating, observation correlation), `cortex_api.py` (status, baselines, adjustments, rules endpoints), `coordinator.py` (cross-device state queries, actuator lookups), `cross_device_rules.py` (scope any/all/self/device_id, target_scope all/self/device_id, shared state tracking, YAML loading).
 
 #### E2E Simulation Tests (requires running stack)
 ```bash

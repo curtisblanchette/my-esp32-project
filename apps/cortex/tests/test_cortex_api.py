@@ -88,7 +88,7 @@ def cortex_client(sqlite_db):
 
     app = FastAPI()
     app.include_router(
-        create_cortex_router(sqlite_db, outcome_tracker, memory, rule_advisor),
+        create_cortex_router(sqlite_db, outcome_tracker, memory, rule_advisor, engine=engine),
         prefix="/api/cortex",
     )
     return TestClient(app), sqlite_db, rule_advisor, engine
@@ -215,4 +215,72 @@ class TestCortexRoutes:
         client, _, _, _ = cortex_client
         r = client.post("/api/cortex/adjustments/nope", json={"action": "approve"})
         assert r.status_code == 200
+        assert r.json()["ok"] is False
+
+    def test_run_advisor_manually(self, cortex_client):
+        """POST /advisor/run triggers analysis and returns suggestions."""
+        client, _, advisor, _ = cortex_client
+        r = client.post("/api/cortex/advisor/run")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert "suggestions" in data
+        assert "count" in data
+        assert isinstance(data["suggestions"], list)
+
+    # ── Rules Endpoints ────────────────────────────────────────────────
+
+    def test_get_rules(self, cortex_client):
+        """GET /rules returns all in-memory rules."""
+        client, _, _, engine = cortex_client
+        r = client.get("/api/cortex/rules")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert len(data["rules"]) == len(engine.rules)
+
+        rule = data["rules"][0]
+        assert rule["name"] == "high_temp_alert"
+        assert rule["enabled"] is True
+        assert rule["modified"] is False
+        assert rule["condition"]["sensor"] == "temp1"
+        assert rule["condition"]["operator"] == ">"
+        assert rule["condition"]["threshold"] == 25
+        assert rule["action"]["target"] == "relay1"
+        assert rule["action"]["value"] is True
+
+    def test_get_rules_includes_modified_flag(self, cortex_client):
+        """Modified rules are flagged in the response."""
+        client, _, _, engine = cortex_client
+        engine.modified_rules.add("high_temp_alert")
+
+        r = client.get("/api/cortex/rules")
+        data = r.json()
+        assert data["rules"][0]["modified"] is True
+
+    def test_toggle_rule_disable(self, cortex_client):
+        """PATCH disables a rule."""
+        client, _, _, engine = cortex_client
+        assert engine.rules[0].enabled is True
+
+        r = client.patch("/api/cortex/rules/high_temp_alert", json={"enabled": False})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert engine.rules[0].enabled is False
+
+    def test_toggle_rule_enable(self, cortex_client):
+        """PATCH re-enables a disabled rule."""
+        client, _, _, engine = cortex_client
+        engine.rules[0].enabled = False
+
+        r = client.patch("/api/cortex/rules/high_temp_alert", json={"enabled": True})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert engine.rules[0].enabled is True
+
+    def test_toggle_nonexistent_rule(self, cortex_client):
+        """PATCH on unknown rule name returns 404."""
+        client, _, _, _ = cortex_client
+        r = client.patch("/api/cortex/rules/nonexistent_rule", json={"enabled": False})
+        assert r.status_code == 404
         assert r.json()["ok"] is False

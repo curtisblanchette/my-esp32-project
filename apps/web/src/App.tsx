@@ -1,18 +1,19 @@
-import React, { useEffect, useState, useCallback, useMemo } from "react";
-import { DndContext, DragOverlay, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent, type DragStartEvent, type DragOverEvent } from "@dnd-kit/core";
-import { SortableContext, arrayMove, rectSortingStrategy } from "@dnd-kit/sortable";
+import React, { useEffect, useState, useCallback, useRef } from "react";
+import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 
-import { fetchLatest, saveDeviceOrder, logObservation, resolveAdjustment, runRuleAdvisor, type LatestReading, type Command, type DeviceEvent, type Device, type ObservationCategory, type RuleSuggestion, RelayStatus } from './api';
-import { DevicePanel } from "./components/DevicePanel";
-import { DeviceDiscoveryState } from "./components/DeviceDiscoveryState";
+import { fetchLatest, resolveAdjustment, runRuleAdvisor, type LatestReading, type Command, type DeviceEvent, type Device, type RuleSuggestion, type CortexRule, RelayStatus } from './api';
 import { ActivityCenter, type ErrorItem } from "./components/ActivityCenter";
-import { ObservationForm } from "./components/ObservationForm";
-import { ChatInput } from "./components/ChatInput";
 import { useWebSocket } from "./hooks/useWebSocket";
+import { Home } from "./pages/Home";
+import { Devices } from "./pages/Devices";
+import { NerveCenter } from "./pages/NerveCenter";
 
 type DiscoveryPhase = "discovering" | "complete";
 
 export function App(): React.ReactElement {
+  const navigate = useNavigate();
+  const location = useLocation();
+
   // Multi-device state
   const [devices, setDevices] = useState<Device[]>([]);
   const [discoveryPhase, setDiscoveryPhase] = useState<DiscoveryPhase>("discovering");
@@ -22,9 +23,11 @@ export function App(): React.ReactElement {
   const [events, setEvents] = useState<DeviceEvent[]>([]);
   const [errors, setErrors] = useState<ErrorItem[]>([]);
   const [suggestions, setSuggestions] = useState<RuleSuggestion[]>([]);
+  const [rules, setRules] = useState<CortexRule[]>([]);
   const [wsRelayUpdates, setWsRelayUpdates] = useState<RelayStatus[] | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [showObservationForm, setShowObservationForm] = useState(false);
+  const [unseenCount, setUnseenCount] = useState(0);
+  const lastSeenCountRef = useRef(0);
 
   const addError = useCallback((message: string, source?: string) => {
     const error: ErrorItem = {
@@ -56,50 +59,6 @@ export function App(): React.ReactElement {
         )
       );
     }
-  }, []);
-
-  // DnD sensors — distance threshold prevents triggering on clicks/taps
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
-  );
-  const [activeId, setActiveId] = useState<string | null>(null);
-
-  const sortedDevices = useMemo(
-    () => [...devices].sort((a, b) => a.displayOrder - b.displayOrder),
-    [devices]
-  );
-
-  const activeDevice = useMemo(
-    () => (activeId ? sortedDevices.find((d) => d.id === activeId) ?? null : null),
-    [activeId, sortedDevices]
-  );
-
-  const handleDragStart = useCallback((event: DragStartEvent) => {
-    setActiveId(String(event.active.id));
-  }, []);
-
-  const handleDragOver = useCallback((event: DragOverEvent) => {
-    const { active, over } = event;
-    if (!over || active.id === over.id) return;
-
-    setDevices((prev) => {
-      const sorted = [...prev].sort((a, b) => a.displayOrder - b.displayOrder);
-      const oldIndex = sorted.findIndex((d) => d.id === active.id);
-      const newIndex = sorted.findIndex((d) => d.id === over.id);
-      if (oldIndex === -1 || newIndex === -1) return prev;
-      const reordered = arrayMove(sorted, oldIndex, newIndex);
-      return reordered.map((d, i) => ({ ...d, displayOrder: i }));
-    });
-  }, []);
-
-  const handleDragEnd = useCallback((event: DragEndEvent) => {
-    setActiveId(null);
-    // Persist current order to backend
-    setDevices((prev) => {
-      const sorted = [...prev].sort((a, b) => a.displayOrder - b.displayOrder);
-      saveDeviceOrder(sorted.map((d) => d.id)).catch(console.error);
-      return prev;
-    });
   }, []);
 
   // WebSocket connection for real-time updates
@@ -161,26 +120,40 @@ export function App(): React.ReactElement {
     onSuggestionsUpdate: (suggestionList) => {
       setSuggestions(suggestionList);
     },
-    // Connection status is shown in UI, no need to add errors to feed
+    onRulesUpdate: (ruleList) => {
+      setRules(ruleList);
+    },
   });
 
-  // Fetch initial latest reading on mount (other data comes via WebSocket)
+  // Fetch initial latest reading on mount (retries while Cortex starts up)
   useEffect(() => {
     const controller = new AbortController();
+    let attempt = 0;
+    const maxRetries = 10;
+    const baseDelay = 2000;
 
     async function fetchInitialData() {
-      try {
-        const l = await fetchLatest(controller.signal);
-        if (l && l.deviceId) {
-          setLatestByDevice((prev) => ({
-            ...prev,
-            [l.deviceId!]: l,
-          }));
+      while (attempt < maxRetries && !controller.signal.aborted) {
+        try {
+          const l = await fetchLatest(controller.signal);
+          if (l && l.deviceId) {
+            setLatestByDevice((prev) => ({
+              ...prev,
+              [l.deviceId!]: l,
+            }));
+          }
+          return; // success
+        } catch (error) {
+          if (error instanceof Error && error.name === "AbortError") return;
+          attempt++;
+          if (attempt >= maxRetries) {
+            console.error("Failed to fetch initial data after retries:", error);
+            addError("Failed to fetch initial data", "API");
+          } else {
+            // Wait with backoff before retrying (2s, 4s, 6s, ...)
+            await new Promise((r) => setTimeout(r, baseDelay * attempt));
+          }
         }
-      } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") return;
-        console.error("Failed to fetch initial data:", error);
-        addError("Failed to fetch initial data", "API");
       }
     }
 
@@ -200,79 +173,121 @@ export function App(): React.ReactElement {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const hasActivity = commands.length > 0 || events.length > 0 || errors.length > 0 || suggestions.length > 0;
+  const totalActivityCount = commands.length + events.length + errors.length + suggestions.length;
+  const hasActivity = totalActivityCount > 0;
+
+  // Track unseen activity — mark seen when drawer opens, count new items when closed
+  useEffect(() => {
+    if (drawerOpen) {
+      lastSeenCountRef.current = totalActivityCount;
+      setUnseenCount(0);
+    } else {
+      const newItems = totalActivityCount - lastSeenCountRef.current;
+      if (newItems > 0) setUnseenCount(newItems);
+    }
+  }, [drawerOpen, totalActivityCount]);
+  const isDevices = location.pathname === "/devices";
+  const isNerveCenter = location.pathname === "/nerve-center";
 
   return (
     <div className="min-h-screen w-full flex flex-col">
       {/* Header */}
-      <header className="sticky top-0 z-40 flex items-center justify-between px-4 py-3 md:px-6 backdrop-blur-[10px] bg-black/10 border-b border-panel-border">
-        <span className="text-sm font-medium tracking-wide opacity-60">Mycelium</span>
-        <button
-          onClick={() => setDrawerOpen((o) => !o)}
-          className="relative p-2.5 rounded-xl border border-panel-border bg-panel/80 hover:bg-panel transition-colors cursor-pointer"
-          aria-label="Toggle recent activity"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <polyline points="12 6 12 12 16 14" />
-          </svg>
-          {hasActivity && (
-            <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-emerald-400" />
-          )}
-        </button>
+      <header className="sticky top-0 z-40 relative flex items-center justify-center px-4 py-4 md:px-6 backdrop-blur-[10px] bg-black/10 border-b border-panel-border">
+        <nav className="flex items-center gap-5">
+          <span
+            className="flex items-center gap-1.5 text-sm font-medium tracking-wide opacity-60 cursor-pointer hover:opacity-80 transition-opacity"
+            onClick={() => navigate("/")}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+              <polyline points="9 22 9 12 15 12 15 22" />
+            </svg>
+            Home
+          </span>
+          <button
+            onClick={() => navigate("/devices")}
+            className={`flex items-center gap-1.5 text-sm cursor-pointer transition-opacity ${
+              isDevices ? "opacity-90 font-medium" : "opacity-50 hover:opacity-70"
+            }`}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="4" y="4" width="16" height="16" rx="2" />
+              <rect x="9" y="9" width="6" height="6" />
+              <path d="M15 2v2" /><path d="M15 20v2" /><path d="M2 15h2" /><path d="M2 9h2" />
+              <path d="M20 15h2" /><path d="M20 9h2" /><path d="M9 2v2" /><path d="M9 20v2" />
+            </svg>
+            Devices
+          </button>
+          <button
+            onClick={() => navigate("/nerve-center")}
+            className={`flex items-center gap-1.5 text-sm cursor-pointer transition-opacity ${
+              isNerveCenter ? "opacity-90 font-medium" : "opacity-50 hover:opacity-70"
+            }`}
+          >
+            <img src="/nerve_center.svg" alt="" width="15" height="15" className="opacity-80" />
+            Nerve Center
+          </button>
+        </nav>
+        <div className="absolute right-4 md:right-6">
+          <button
+            onClick={() => setDrawerOpen((o) => !o)}
+            className={`relative p-2.5 rounded-xl border transition-colors cursor-pointer ${
+              drawerOpen
+                ? "border-white/20 bg-white/10"
+                : "border-panel-border bg-panel/80 hover:bg-panel"
+            }`}
+            aria-label="Toggle recent activity"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`transition-opacity ${drawerOpen ? "opacity-90" : "opacity-60"}`}>
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+            {unseenCount > 0 && !drawerOpen && (
+              <span className="absolute top-1 right-1 min-w-[14px] h-[14px] flex items-center justify-center px-0.5 rounded-full bg-emerald-500 text-[9px] font-semibold text-white">
+                {unseenCount > 9 ? "9+" : unseenCount}
+              </span>
+            )}
+          </button>
+        </div>
       </header>
 
-      {/* Main content area */}
-      <div className="flex-1 w-full flex justify-center px-3 py-5 pb-40 md:px-5 md:pb-24">
-        <div className="w-full">
-          {/* Device panels section */}
-          <div className="flex-1 min-w-0 flex flex-wrap justify-left flex-row gap-5">
-            {/* Discovery state or device panels */}
-            {discoveryPhase === "discovering" && devices.length === 0 ? (
-              <DeviceDiscoveryState />
-            ) : sortedDevices.length > 0 ? (
-              <DndContext sensors={sensors} collisionDetection={closestCenter} onDragStart={handleDragStart} onDragOver={handleDragOver} onDragEnd={handleDragEnd}>
-                <SortableContext items={sortedDevices.map((d) => d.id)} strategy={rectSortingStrategy}>
-                  {sortedDevices.map((device) => (
-                    <DevicePanel
-                      key={device.id}
-                      device={device}
-                      latestReading={latestByDevice[device.id] || null}
-                      commands={commands}
-                      isConnected={isConnected}
-                      wsRelayUpdates={wsRelayUpdates}
-                      onError={addError}
-                    />
-                  ))}
-                </SortableContext>
-                <DragOverlay dropAnimation={null}>
-                  {activeDevice && (
-                    <DevicePanel
-                      device={activeDevice}
-                      latestReading={latestByDevice[activeDevice.id] || null}
-                      commands={commands}
-                      isConnected={isConnected}
-                      wsRelayUpdates={wsRelayUpdates}
-                      onError={addError}
-                      isOverlay
-                    />
-                  )}
-                </DragOverlay>
-              </DndContext>
-            ) : (
-              <div className="flex-1 min-w-0 border border-panel-border rounded-2xl p-5 backdrop-blur-[10px] flex items-center justify-center min-h-[200px]">
-                <div className="text-sm opacity-60">
-                  No devices found on the network. Make sure your devices are powered on and connected.
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+      {/* Route content */}
+      <Routes>
+        <Route path="/" element={<Home devices={devices} />} />
+        <Route
+          path="/devices"
+          element={
+            <Devices
+              devices={devices}
+              setDevices={setDevices}
+              discoveryPhase={discoveryPhase}
+              latestByDevice={latestByDevice}
+              commands={commands}
+              isConnected={isConnected}
+              wsRelayUpdates={wsRelayUpdates}
+              addError={addError}
+            />
+          }
+        />
+        <Route
+          path="/nerve-center"
+          element={
+            <NerveCenter
+              devices={devices}
+              suggestions={suggestions}
+              rules={rules}
+              setRules={setRules}
+              onResolveAdjustment={handleResolveAdjustment}
+              onRunAdvisor={handleRunAdvisor}
+              addError={addError}
+            />
+          }
+        />
+      </Routes>
 
       {/* Drawer backdrop */}
       <div
-        className={`fixed inset-0 top-[53px] z-30 bg-black/40 transition-opacity duration-300 ${drawerOpen ? "opacity-100" : "opacity-0 pointer-events-none"}`}
+        className={`fixed inset-0 z-30 bg-black/40 transition-opacity duration-300 ${drawerOpen ? "opacity-100" : "opacity-0 pointer-events-none"}`}
         onClick={() => setDrawerOpen(false)}
       />
 
@@ -280,47 +295,21 @@ export function App(): React.ReactElement {
       <div
         className={`fixed top-[53px] right-0 z-30 bottom-0 w-[340px] max-w-[85vw] backdrop-blur-[12px] bg-black/60 border-l border-panel-border transition-transform duration-300 flex flex-col ${drawerOpen ? "translate-x-0" : "translate-x-full"}`}
       >
-        <div className="flex items-center justify-between pt-5 px-5">
+        <div className="pt-5 px-5">
           <h2 className="text-sm font-medium opacity-80">Activity Center</h2>
-          <button
-            onClick={() => setShowObservationForm((prev) => !prev)}
-            className="p-1.5 rounded-lg border border-panel-border bg-panel/80 hover:bg-panel transition-colors cursor-pointer"
-            aria-label="Log observation"
-            title="Log observation"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19" />
-              <line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-          </button>
         </div>
-        {showObservationForm && (
-          <div className="px-5 pt-3">
-            <ObservationForm
-              devices={devices}
-              onSubmit={async (obs) => {
-                await logObservation(obs);
-                setShowObservationForm(false);
-              }}
-              onCancel={() => setShowObservationForm(false)}
-            />
+        <div className="relative flex-1 min-h-0">
+          <div className="h-full overflow-y-auto overflow-x-hidden pt-4 px-5 pb-32">
+            {hasActivity ? (
+              <ActivityCenter commands={commands} events={events} errors={errors} suggestions={suggestions} onResolveAdjustment={handleResolveAdjustment} maxItems={20} />
+            ) : (
+              <div className="text-sm opacity-60">No recent activity</div>
+            )}
           </div>
-        )}
-        <div className="flex-1 min-h-0 overflow-y-auto pt-4 px-5 pb-24">
-          {hasActivity ? (
-            <ActivityCenter commands={commands} events={events} errors={errors} suggestions={suggestions} onResolveAdjustment={handleResolveAdjustment} onRunAdvisor={handleRunAdvisor} maxItems={20} />
-          ) : (
-            <div className="text-sm opacity-60">No recent activity</div>
-          )}
+          <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-24 bg-gradient-to-t from-black/60 to-transparent" />
         </div>
       </div>
 
-      {/* Chat input - pinned to bottom */}
-      <div className="fixed bottom-0 left-0 right-0 z-40 backdrop-blur-md border-t border-panel-border p-4 bg-black/20 dark:bg-black/40">
-        <div className="max-w-[1400px] mx-auto">
-          <ChatInput />
-        </div>
-      </div>
     </div>
   );
 }

@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { DndContext, DragOverlay, closestCenter, PointerSensor, useSensor, useSensors, type DragEndEvent, type DragStartEvent, type DragOverEvent } from "@dnd-kit/core";
 import { SortableContext, arrayMove, rectSortingStrategy } from "@dnd-kit/sortable";
 
-import { fetchLatest, saveDeviceOrder, logObservation, resolveAdjustment, type LatestReading, type Command, type DeviceEvent, type Device, type ObservationCategory, type RuleSuggestion, RelayStatus } from './api';
+import { fetchLatest, saveDeviceOrder, logObservation, resolveAdjustment, runRuleAdvisor, type LatestReading, type Command, type DeviceEvent, type Device, type ObservationCategory, type RuleSuggestion, RelayStatus } from './api';
 import { DevicePanel } from "./components/DevicePanel";
 import { DeviceDiscoveryState } from "./components/DeviceDiscoveryState";
 import { ActivityCenter, type ErrorItem } from "./components/ActivityCenter";
@@ -35,6 +35,14 @@ export function App(): React.ReactElement {
     };
     setErrors((prev) => [error, ...prev].slice(0, 20)); // Keep last 20 errors
   }, []);
+
+  const handleRunAdvisor = useCallback(async () => {
+    try {
+      await runRuleAdvisor();
+    } catch (err) {
+      addError("Failed to run rule advisor", "Cortex");
+    }
+  }, [addError]);
 
   const handleResolveAdjustment = useCallback(async (id: string, action: "approve" | "reject") => {
     const ok = await resolveAdjustment(id, action);
@@ -270,7 +278,7 @@ export function App(): React.ReactElement {
 
       {/* Drawer panel */}
       <div
-        className={`fixed top-[53px] right-0 z-30 bottom-0 w-[340px] max-w-[85vw] backdrop-blur-[12px] bg-black/60 border-l border-panel-border transition-transform duration-300 ${drawerOpen ? "translate-x-0" : "translate-x-full"}`}
+        className={`fixed top-[53px] right-0 z-30 bottom-0 w-[340px] max-w-[85vw] backdrop-blur-[12px] bg-black/60 border-l border-panel-border transition-transform duration-300 flex flex-col ${drawerOpen ? "translate-x-0" : "translate-x-full"}`}
       >
         <div className="flex items-center justify-between pt-5 px-5">
           <h2 className="text-sm font-medium opacity-80">Activity Center</h2>
@@ -298,9 +306,9 @@ export function App(): React.ReactElement {
             />
           </div>
         )}
-        <div className="h-full pt-4 px-5 pb-24">
+        <div className="flex-1 min-h-0 overflow-y-auto pt-4 px-5 pb-24">
           {hasActivity ? (
-            <ActivityCenter commands={commands} events={events} errors={errors} suggestions={suggestions} onResolveAdjustment={handleResolveAdjustment} maxItems={20} />
+            <ActivityCenter commands={commands} events={events} errors={errors} suggestions={suggestions} onResolveAdjustment={handleResolveAdjustment} onRunAdvisor={handleRunAdvisor} maxItems={20} />
           ) : (
             <div className="text-sm opacity-60">No recent activity</div>
           )}

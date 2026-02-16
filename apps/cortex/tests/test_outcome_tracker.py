@@ -65,8 +65,7 @@ class MockDataReader:
         self._readings = [
             MergedReading(
                 ts=int(time.time() * 1000),
-                temp=temp,
-                humidity=humidity,
+                readings={"temp1": temp, "hum1": humidity},
                 device_id=device_id,
             )
         ]
@@ -77,15 +76,14 @@ class MockDataReader:
     def get_readings(self, since_ms=0, until_ms=None, device_id=None, limit=5000):
         return self._readings
 
-    def extract_metric(self, readings, metric):
+    def extract_metric(self, readings, sensor_id):
         values = []
         timestamps = []
         for r in readings:
-            if metric == "temperature":
-                values.append(r.temp)
-            elif metric == "humidity":
-                values.append(r.humidity)
-            timestamps.append(r.ts)
+            val = r.readings.get(sensor_id)
+            if val is not None:
+                values.append(val)
+                timestamps.append(r.ts)
         return values, timestamps
 
 
@@ -149,6 +147,63 @@ class TestInferDesiredDirection:
     def test_none_reason(self):
         assert OutcomeTracker._infer_desired_direction(None, True) == "decrease"
         assert OutcomeTracker._infer_desired_direction(None, False) == "increase"
+
+    def test_metric_aware_soil_moisture(self):
+        # Irrigation ON → soil_moisture should increase
+        assert OutcomeTracker._infer_desired_direction(
+            "Soil moisture below 20%", True, "soil_moisture",
+        ) == "increase"
+        # Irrigation OFF → soil_moisture should decrease (natural drying)
+        assert OutcomeTracker._infer_desired_direction(
+            "Soil saturated", False, "soil_moisture",
+        ) == "decrease"
+
+    def test_metric_aware_light_level(self):
+        # Grow light ON → light_level should increase
+        assert OutcomeTracker._infer_desired_direction(
+            "Daytime — grow lights on", True, "light_level",
+        ) == "increase"
+        # Grow light OFF → light_level should decrease
+        assert OutcomeTracker._infer_desired_direction(
+            "Nighttime — lights off", False, "light_level",
+        ) == "decrease"
+
+    def test_metric_aware_humidity(self):
+        # Humidifier ON → humidity should increase
+        assert OutcomeTracker._infer_desired_direction(
+            "Low humidity — humidifying", True, "humidity",
+        ) == "increase"
+        # Dehumidifier ON → humidity should decrease (keyword match)
+        assert OutcomeTracker._infer_desired_direction(
+            "High humidity — dehumidifying", True, "humidity",
+        ) == "decrease"
+
+    def test_keywords_override_metric(self):
+        # Explicit keyword takes priority over metric inference
+        assert OutcomeTracker._infer_desired_direction(
+            "Cooling the room", True, "temperature",
+        ) == "decrease"
+        assert OutcomeTracker._infer_desired_direction(
+            "Warm the room", True, "temperature",
+        ) == "increase"
+
+    def test_metric_fallback_no_keywords(self):
+        # No keyword match → metric-aware ON/OFF inference
+        assert OutcomeTracker._infer_desired_direction(
+            "Generic activation", True, "light_level",
+        ) == "increase"
+        assert OutcomeTracker._infer_desired_direction(
+            "Generic activation", True, "temperature",
+        ) == "decrease"
+
+    def test_legacy_fallback_no_metric(self):
+        # No metric → legacy ON=decrease, OFF=increase
+        assert OutcomeTracker._infer_desired_direction(
+            "Generic activation", True,
+        ) == "decrease"
+        assert OutcomeTracker._infer_desired_direction(
+            "Generic deactivation", False,
+        ) == "increase"
 
 
 # ── TestScoreOutcome ──────────────────────────────────────────────────

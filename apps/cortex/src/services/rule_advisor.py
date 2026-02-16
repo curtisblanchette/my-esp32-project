@@ -28,8 +28,15 @@ logger = logging.getLogger(__name__)
 
 AUTO_APPLY_CONFIDENCE = 0.8
 AUTO_APPLY_FIELDS = {"threshold", "forecast_threshold"}
+
+# Effectiveness guard — skip "unreachable" suggestions for rules that are
+# already working well.  If a rule has high effectiveness, the threshold
+# appears unreachable only because the rule keeps the environment controlled.
+EFFECTIVENESS_GUARD_THRESHOLD = 0.5
+EFFECTIVENESS_GUARD_MIN_SAMPLES = 3
+TOO_SENSITIVE_MAX_CHANGE_PCT = 0.25  # Cap adjustment to ±25% of original
 OBSERVATION_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000  # 7 days
-SENSOR_TO_METRIC = {"temp1": "temperature", "hum1": "humidity"}
+from .sensor_meta import guess_sensor_type, sensor_unit as get_sensor_unit
 
 ADVISOR_SYSTEM_PROMPT = """You are analyzing automation rule performance for an IoT sensor monitoring system.
 You will receive rule definitions with their recent outcome data, learned sensor baselines, and human observations.
@@ -116,7 +123,7 @@ class RuleAdvisor:
         observation_summary = self._collect_observation_summary()
 
         # 2. Deterministic pre-pass (no LLM needed)
-        deterministic = self._deterministic_gap_analysis(baseline_summary)
+        deterministic = self._deterministic_gap_analysis(baseline_summary, rule_performance)
 
         # 3. LLM path (gated on outcome count >= 5 and Ollama availability)
         total_outcomes = sum(rp.get("sample_count", 0) for rp in rule_performance)
@@ -211,11 +218,30 @@ class RuleAdvisor:
 
     # ── Deterministic Gap Analysis ─────────────────────────────────────
 
-    def _deterministic_gap_analysis(self, baseline_summary: list[dict]) -> list[dict]:
-        """Programmatically compare rule thresholds against learned baselines."""
+    def _deterministic_gap_analysis(
+        self,
+        baseline_summary: list[dict],
+        rule_performance: list[dict] | None = None,
+    ) -> list[dict]:
+        """Programmatically compare rule thresholds against learned baselines.
+
+        Args:
+            baseline_summary: Per-metric, per-hour baseline statistics.
+            rule_performance: Optional per-rule effectiveness data.  When
+                provided, rules with high effectiveness (>0.5 avg, >=3
+                outcomes) are shielded from "unreachable" and "stale
+                forecast" suggestions — their controlled baselines make
+                thresholds appear unreachable, but that's the desired state.
+        """
         suggestions: list[dict] = []
         if not baseline_summary:
             return suggestions
+
+        # Build effectiveness lookup
+        eff_by_rule: dict[str, dict] = {}
+        if rule_performance:
+            for rp in rule_performance:
+                eff_by_rule[rp["rule_name"]] = rp
 
         # Group baselines by metric
         baselines_by_metric: dict[str, list[dict]] = {}
@@ -228,7 +254,7 @@ class RuleAdvisor:
             if rule.condition.scope != "self":
                 continue
 
-            metric = SENSOR_TO_METRIC.get(rule.condition.sensor)
+            metric = guess_sensor_type(rule.condition.sensor)
             if not metric or metric not in baselines_by_metric:
                 continue
 
@@ -244,15 +270,26 @@ class RuleAdvisor:
             threshold = rule.condition.threshold
             op = rule.condition.operator
 
+            # Effectiveness guard: skip unreachable/stale-forecast for rules
+            # that are already working well.
+            rule_eff = eff_by_rule.get(rule.name)
+            rule_is_effective = (
+                rule_eff is not None
+                and rule_eff.get("sample_count", 0) >= EFFECTIVENESS_GUARD_MIN_SAMPLES
+                and rule_eff.get("avg_effectiveness", 0) > EFFECTIVENESS_GUARD_THRESHOLD
+            )
+
             # --- (a) Unreachable threshold ---
-            unreachable = self._detect_unreachable(rule, hourly, op, threshold, total_samples, hours_covered)
-            if unreachable:
-                suggestions.append(unreachable)
+            if not rule_is_effective:
+                unreachable = self._detect_unreachable(rule, hourly, op, threshold, total_samples, hours_covered)
+                if unreachable:
+                    suggestions.append(unreachable)
 
             # --- (b) Too-sensitive threshold ---
-            sensitive = self._detect_too_sensitive(rule, hourly, op, threshold)
-            if sensitive:
-                suggestions.append(sensitive)
+            if not rule_is_effective:
+                sensitive = self._detect_too_sensitive(rule, hourly, op, threshold)
+                if sensitive:
+                    suggestions.append(sensitive)
 
             # --- (c) Missing baseline_deviation ---
             missing_bd = self._detect_missing_baseline_deviation(rule, hourly)
@@ -260,9 +297,10 @@ class RuleAdvisor:
                 suggestions.append(missing_bd)
 
             # --- (d) Stale forecast_threshold ---
-            stale_fc = self._detect_stale_forecast(rule, hourly, total_samples, hours_covered)
-            if stale_fc:
-                suggestions.append(stale_fc)
+            if not rule_is_effective:
+                stale_fc = self._detect_stale_forecast(rule, hourly, total_samples, hours_covered)
+                if stale_fc:
+                    suggestions.append(stale_fc)
 
         return suggestions
 
@@ -335,6 +373,13 @@ class RuleAdvisor:
             weighted = sum((b["avg"] - 2 * b["stdDev"]) * b["sampleCount"] for b in hourly) / total_weight
 
         suggested = round(weighted, 2)
+
+        # Cap: don't move more than 25% from original threshold
+        max_delta = abs(threshold) * TOO_SENSITIVE_MAX_CHANGE_PCT
+        if max_delta > 0:
+            suggested = max(threshold - max_delta, min(threshold + max_delta, suggested))
+            suggested = round(suggested, 2)
+
         if suggested == threshold:
             return None
 
@@ -572,11 +617,12 @@ class RuleAdvisor:
         rules_section = "Current rules and their recent performance:\n"
         for rp in rule_performance:
             cond = rp["condition"]
-            sensor_unit = "°C" if "temp" in cond["sensor"] else "%"
+            stype = guess_sensor_type(cond["sensor"])
+            unit = get_sensor_unit(stype)
             rules_section += (
                 f"- {rp['rule_name']} "
                 f"(sensor: {cond['sensor']}, operator: {cond['operator']}, "
-                f"threshold: {cond['threshold']}{sensor_unit}, "
+                f"threshold: {cond['threshold']}{unit}, "
                 f"duration: {cond['duration_seconds']}s): "
                 f"{rp['sample_count']} outcomes, "
                 f"avg effectiveness: {rp['avg_effectiveness']:+.2f}, "
@@ -584,7 +630,7 @@ class RuleAdvisor:
             )
             if "forecast" in cond:
                 rules_section += (
-                    f"  Forecast: {cond['forecast']} {cond.get('forecast_threshold', '?')}{sensor_unit} "
+                    f"  Forecast: {cond['forecast']} {cond.get('forecast_threshold', '?')}{unit} "
                     f"within {cond.get('forecast_within_minutes', '?')}min\n"
                 )
             if "baseline_deviation" in cond:
@@ -595,7 +641,7 @@ class RuleAdvisor:
         if baseline_summary:
             baseline_section = "\nLearned baselines (typical values by hour):\n"
             for b in baseline_summary:
-                unit = "°C" if b["metric"] == "temperature" else "%"
+                unit = get_sensor_unit(b["metric"])
                 baseline_section += (
                     f"- {b['metric']} hour {b['hour']}: "
                     f"avg={b['avg']}{unit}, std_dev={b['stdDev']} "
@@ -673,11 +719,13 @@ Consider whether thresholds are too sensitive or not sensitive enough based on o
         return None
 
     def _apply_to_engine(self, rule_name: str, field: str, value: Any) -> None:
-        """Modify a rule's condition field in-memory."""
+        """Modify a rule's condition field in-memory and persist to DB."""
         for rule in self._engine.rules:
             if rule.name == rule_name:
                 if hasattr(rule.condition, field):
                     setattr(rule.condition, field, value)
-                    self._engine.modified_rules.add(rule_name)
+                    # Persist to DB if rule has an id
+                    if rule.id:
+                        self._sqlite.update_rule_condition_field(rule.id, field, value)
                     logger.info(f"Applied rule change: {rule_name}.{field} = {value}")
                 return

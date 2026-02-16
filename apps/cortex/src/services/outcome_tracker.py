@@ -25,8 +25,12 @@ logger = logging.getLogger(__name__)
 
 # Scale factors for normalizing score across different sensor types
 SCALE_FACTORS = {
-    "temperature": 2.0,  # 2°C change = full score
-    "humidity": 5.0,     # 5% change = full score
+    "temperature": 2.0,      # 2°C change = full score
+    "humidity": 5.0,          # 5% change = full score
+    "soil_moisture": 5.0,     # 5% change = full score
+    "light_level": 100.0,     # 100 lux change = full score
+    "co2": 100.0,             # 100 ppm change = full score
+    "pressure": 5.0,          # 5 hPa change = full score
 }
 
 # Check interval weights (must sum to 1.0)
@@ -39,10 +43,36 @@ INTERVAL_WEIGHTS = {
 # Keywords for inferring target metric from reason string
 TEMP_KEYWORDS = {"temp", "temperature", "hot", "cold", "cool", "heat", "warm", "thermal"}
 HUMIDITY_KEYWORDS = {"hum", "humidity", "moist", "dry", "damp", "wet"}
+SOIL_KEYWORDS = {"soil", "moisture", "irrigation", "water", "plant"}
+LIGHT_KEYWORDS = {"light", "lux", "bright", "dark", "dim", "illuminate"}
+CO2_KEYWORDS = {"co2", "carbon", "air quality", "ventilat"}
+PRESSURE_KEYWORDS = {"pressure", "baro", "altitude"}
+
+METRIC_KEYWORD_MAP = [
+    ("soil_moisture", SOIL_KEYWORDS),
+    ("light_level", LIGHT_KEYWORDS),
+    ("humidity", HUMIDITY_KEYWORDS),
+    ("co2", CO2_KEYWORDS),
+    ("pressure", PRESSURE_KEYWORDS),
+    ("temperature", TEMP_KEYWORDS),
+]
 
 # Keywords for inferring desired direction
-DECREASE_KEYWORDS = {"cool", "lower", "drop", "reduce", "decrease", "save energy", "too hot", "overheating"}
-INCREASE_KEYWORDS = {"heat", "warm", "raise", "increase", "too cold", "freezing"}
+DECREASE_KEYWORDS = {"cool", "lower", "drop", "reduce", "decrease", "save energy", "too hot", "overheating",
+                     "dehumidif", "exhaust"}
+INCREASE_KEYWORDS = {"heat", "warm", "raise", "increase", "too cold", "freezing",
+                     "humidif", "lights on", "grow light", "illuminate"}
+
+# What direction does "turning ON" push each metric?
+# ON pushes the metric in this direction; OFF pushes the opposite.
+ON_DIRECTION_BY_METRIC: dict[str, str] = {
+    "temperature": "decrease",    # fan/exhaust ON → cools temp
+    "humidity": "decrease",       # dehumidifier ON → decreases humidity
+    "soil_moisture": "increase",  # irrigation ON → increases soil moisture
+    "light_level": "increase",    # grow light ON → increases light
+    "co2": "decrease",            # ventilation ON → decreases CO2
+    "pressure": "decrease",       # vent ON → decreases pressure
+}
 
 
 @dataclass
@@ -144,7 +174,9 @@ class OutcomeTracker:
             return
 
         target_metric = self._infer_target_metric(command.reason)
-        desired_direction = self._infer_desired_direction(command.reason, command.value)
+        desired_direction = self._infer_desired_direction(
+            command.reason, command.value, target_metric,
+        )
 
         pending = PendingOutcome(
             correlation_id=command.correlation_id,
@@ -198,7 +230,7 @@ class OutcomeTracker:
                 continue
 
             # Time to collect a post-snapshot
-            sensor_id = "temp1" if pending.target_metric == "temperature" else "hum1"
+            sensor_id = self._resolve_sensor_id(pending)
             current_value = self._get_current_value(pending.device_id, pending.target_metric)
 
             if current_value is not None:
@@ -330,18 +362,28 @@ class OutcomeTracker:
                 return None
 
             latest = readings[-1]
-            if metric == "temperature":
-                return latest.temp
-            elif metric == "humidity":
-                return latest.humidity
+            # Find sensor matching the metric type
+            from .sensor_meta import guess_sensor_type
+            for sensor_id, value in latest.readings.items():
+                if guess_sensor_type(sensor_id) == metric:
+                    return value
             return None
         except Exception as e:
             logger.error(f"Failed to read current value for {device_id}/{metric}: {e}")
             return None
 
+    def _resolve_sensor_id(self, pending: PendingOutcome) -> str:
+        """Resolve the sensor_id from pre_snapshot that matches the target metric."""
+        from .sensor_meta import guess_sensor_type
+        for sid in pending.pre_snapshot.values:
+            if guess_sensor_type(sid) == pending.target_metric:
+                return sid
+        # Fallback: return first sensor_id
+        return next(iter(pending.pre_snapshot.values), "temp1")
+
     def _finalize_outcome(self, pending: PendingOutcome) -> OutcomeRecord | None:
         """Score a completed outcome and store to SQLite."""
-        sensor_id = "temp1" if pending.target_metric == "temperature" else "hum1"
+        sensor_id = self._resolve_sensor_id(pending)
         pre_value = pending.pre_snapshot.values.get(sensor_id)
         if pre_value is None:
             logger.warning(f"No pre-value for {pending.correlation_id}, skipping")
@@ -388,7 +430,7 @@ class OutcomeTracker:
 
     def _complete_outcome(self, pending: PendingOutcome, effectiveness: float) -> None:
         """Store a failed/immediate outcome and remove from pending."""
-        sensor_id = "temp1" if pending.target_metric == "temperature" else "hum1"
+        sensor_id = self._resolve_sensor_id(pending)
         pre_value = pending.pre_snapshot.values.get(sensor_id, 0.0)
 
         record = OutcomeRecord(
@@ -450,18 +492,24 @@ class OutcomeTracker:
             return "temperature"
 
         reason_lower = reason.lower()
-        for keyword in HUMIDITY_KEYWORDS:
-            if keyword in reason_lower:
-                return "humidity"
-        for keyword in TEMP_KEYWORDS:
-            if keyword in reason_lower:
-                return "temperature"
+        for metric, keywords in METRIC_KEYWORD_MAP:
+            for keyword in keywords:
+                if keyword in reason_lower:
+                    return metric
 
         return "temperature"
 
     @staticmethod
-    def _infer_desired_direction(reason: str | None, value: Any) -> str:
-        """Infer the desired sensor direction from reason and command value."""
+    def _infer_desired_direction(
+        reason: str | None, value: Any, target_metric: str | None = None,
+    ) -> str:
+        """Infer the desired sensor direction from reason, value, and metric.
+
+        Priority:
+        1. Explicit keywords in the reason string
+        2. Metric-aware ON/OFF inference (e.g., irrigation ON → soil_moisture increase)
+        3. Legacy fallback: ON → decrease (assumes cooling)
+        """
         if reason:
             reason_lower = reason.lower()
             for keyword in DECREASE_KEYWORDS:
@@ -471,7 +519,15 @@ class OutcomeTracker:
                 if keyword in reason_lower:
                     return "increase"
 
-        # Fallback: ON typically means cooling (decrease temp), OFF means allowing increase
+        # Metric-aware fallback: what direction does ON/OFF push this metric?
+        if target_metric and target_metric in ON_DIRECTION_BY_METRIC:
+            on_direction = ON_DIRECTION_BY_METRIC[target_metric]
+            if value is True:
+                return on_direction
+            else:
+                return "increase" if on_direction == "decrease" else "decrease"
+
+        # Legacy fallback for unknown metrics
         if value is True:
             return "decrease"
         return "increase"

@@ -6,7 +6,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.services.rule_advisor import RuleAdvisor, AUTO_APPLY_CONFIDENCE, SENSOR_TO_METRIC
+from src.services.rule_advisor import (
+    RuleAdvisor, AUTO_APPLY_CONFIDENCE,
+    EFFECTIVENESS_GUARD_THRESHOLD, EFFECTIVENESS_GUARD_MIN_SAMPLES,
+    TOO_SENSITIVE_MAX_CHANGE_PCT,
+)
 from src.services.decision_engine import DecisionEngine, Rule, RuleCondition, RuleAction
 from src.services.cortex_memory import CortexMemory
 from src.services.outcome_tracker import OutcomeTracker
@@ -828,6 +832,247 @@ class TestDeterministicGapAnalysis:
         assert threshold_suggestions == []
 
 
+class TestEffectivenessGuard:
+    """Tests for the effectiveness guard that prevents over-correction of working rules."""
+
+    def test_effective_rule_skips_unreachable(self, sqlite_db):
+        """Rule with high effectiveness (>0.5, >=3 samples) is NOT flagged as unreachable."""
+        engine = _make_engine([
+            Rule(
+                name="exhaust_on",
+                description="Exhaust when hot",
+                condition=RuleCondition(sensor="temp1", operator=">", threshold=28, duration_seconds=60),
+                action=RuleAction(target="relay2", action="set", value=True, reason="Too hot"),
+            ),
+        ])
+        memory = CortexMemory(sqlite_db)
+        _seed_device(sqlite_db)
+        _seed_outcomes(sqlite_db, count=0)
+        outcome_tracker = OutcomeTracker(sqlite_db, MagicMock())
+
+        # Baselines reflect controlled environment (fan keeps temp at ~25)
+        # avg=25, std=0.8 → max_upper = 25 + 2*0.8 = 26.6
+        # threshold=28 > 26.6 → would be "unreachable" without guard
+        _seed_baselines(memory, avg=25.0, std_dev=0.8)
+
+        advisor = RuleAdvisor(sqlite_db, outcome_tracker, memory, MagicMock(), engine)
+        baselines = advisor._collect_baseline_summary()
+
+        rule_performance = [{
+            "rule_name": "exhaust_on",
+            "sample_count": 5,
+            "avg_effectiveness": 0.7,
+            "success_rate": 0.8,
+        }]
+        suggestions = advisor._deterministic_gap_analysis(baselines, rule_performance)
+        unreachable = [s for s in suggestions if "unreachable" in s.get("reason", "")]
+        assert unreachable == [], "Effective rule should NOT be flagged as unreachable"
+
+    def test_ineffective_rule_still_flagged(self, sqlite_db):
+        """Rule with low effectiveness IS still flagged as unreachable."""
+        engine = _make_engine([
+            Rule(
+                name="broken_rule",
+                description="Broken threshold",
+                condition=RuleCondition(sensor="temp1", operator=">", threshold=28, duration_seconds=60),
+                action=RuleAction(target="relay2", action="set", value=True, reason="Too hot"),
+            ),
+        ])
+        memory = CortexMemory(sqlite_db)
+        _seed_device(sqlite_db)
+        _seed_outcomes(sqlite_db, count=0)
+        outcome_tracker = OutcomeTracker(sqlite_db, MagicMock())
+
+        _seed_baselines(memory, avg=25.0, std_dev=0.8)
+
+        advisor = RuleAdvisor(sqlite_db, outcome_tracker, memory, MagicMock(), engine)
+        baselines = advisor._collect_baseline_summary()
+
+        rule_performance = [{
+            "rule_name": "broken_rule",
+            "sample_count": 5,
+            "avg_effectiveness": 0.2,
+            "success_rate": 0.3,
+        }]
+        suggestions = advisor._deterministic_gap_analysis(baselines, rule_performance)
+        unreachable = [s for s in suggestions if "unreachable" in s.get("reason", "")]
+        assert len(unreachable) == 1
+
+    def test_insufficient_samples_not_guarded(self, sqlite_db):
+        """Rule with <3 samples is NOT guarded (insufficient evidence)."""
+        engine = _make_engine([
+            Rule(
+                name="new_rule",
+                description="Newly added",
+                condition=RuleCondition(sensor="temp1", operator=">", threshold=28, duration_seconds=60),
+                action=RuleAction(target="relay2", action="set", value=True, reason="Too hot"),
+            ),
+        ])
+        memory = CortexMemory(sqlite_db)
+        _seed_device(sqlite_db)
+        _seed_outcomes(sqlite_db, count=0)
+        outcome_tracker = OutcomeTracker(sqlite_db, MagicMock())
+
+        _seed_baselines(memory, avg=25.0, std_dev=0.8)
+
+        advisor = RuleAdvisor(sqlite_db, outcome_tracker, memory, MagicMock(), engine)
+        baselines = advisor._collect_baseline_summary()
+
+        rule_performance = [{
+            "rule_name": "new_rule",
+            "sample_count": 2,
+            "avg_effectiveness": 0.9,
+            "success_rate": 1.0,
+        }]
+        suggestions = advisor._deterministic_gap_analysis(baselines, rule_performance)
+        unreachable = [s for s in suggestions if "unreachable" in s.get("reason", "")]
+        assert len(unreachable) == 1
+
+    def test_no_performance_data_backward_compatible(self, sqlite_db):
+        """Passing None for rule_performance preserves original behavior."""
+        engine = _make_engine([
+            Rule(
+                name="compat_rule",
+                description="Test backward compat",
+                condition=RuleCondition(sensor="temp1", operator=">", threshold=35, duration_seconds=10),
+                action=RuleAction(target="relay1", action="set", value=True, reason="Hot"),
+            ),
+        ])
+        memory = CortexMemory(sqlite_db)
+        _seed_device(sqlite_db)
+        _seed_outcomes(sqlite_db, count=0)
+        outcome_tracker = OutcomeTracker(sqlite_db, MagicMock())
+
+        _seed_baselines(memory, avg=22.0, std_dev=1.0)
+
+        advisor = RuleAdvisor(sqlite_db, outcome_tracker, memory, MagicMock(), engine)
+        baselines = advisor._collect_baseline_summary()
+
+        suggestions = advisor._deterministic_gap_analysis(baselines, None)
+        unreachable = [s for s in suggestions if "unreachable" in s.get("reason", "")]
+        assert len(unreachable) == 1
+
+    def test_too_sensitive_guarded(self, sqlite_db):
+        """Effective rules are protected from too-sensitive suggestions."""
+        engine = _make_engine([
+            Rule(
+                name="sensitive_effective",
+                description="Fires too often but effective",
+                condition=RuleCondition(sensor="temp1", operator=">", threshold=21, duration_seconds=10),
+                action=RuleAction(target="relay1", action="set", value=True, reason="Warm"),
+            ),
+        ])
+        memory = CortexMemory(sqlite_db)
+        _seed_device(sqlite_db)
+        _seed_outcomes(sqlite_db, count=0)
+        outcome_tracker = OutcomeTracker(sqlite_db, MagicMock())
+
+        _seed_baselines(memory, avg=21.0, std_dev=1.0)
+
+        advisor = RuleAdvisor(sqlite_db, outcome_tracker, memory, MagicMock(), engine)
+        baselines = advisor._collect_baseline_summary()
+
+        rule_performance = [{
+            "rule_name": "sensitive_effective",
+            "sample_count": 10,
+            "avg_effectiveness": 0.8,
+            "success_rate": 0.9,
+        }]
+        suggestions = advisor._deterministic_gap_analysis(baselines, rule_performance)
+        sensitive = [s for s in suggestions if "fires too often" in s.get("reason", "")]
+        assert len(sensitive) == 0, "Too-sensitive should be guarded for effective rules"
+
+    def test_effective_rule_skips_stale_forecast(self, sqlite_db):
+        """Effective rule's stale forecast threshold is also skipped."""
+        engine = _make_engine([
+            Rule(
+                name="forecast_rule",
+                description="Preemptive cooling",
+                condition=RuleCondition(
+                    sensor="temp1", operator=">=", threshold=0,
+                    forecast="will_exceed", forecast_threshold=30.0,
+                    forecast_within_minutes=15,
+                ),
+                action=RuleAction(target="relay2", action="set", value=True, reason="Forecast hot"),
+            ),
+        ])
+        memory = CortexMemory(sqlite_db)
+        _seed_device(sqlite_db)
+        _seed_outcomes(sqlite_db, count=0)
+        outcome_tracker = OutcomeTracker(sqlite_db, MagicMock())
+
+        _seed_baselines(memory, avg=25.0, std_dev=0.8)
+
+        advisor = RuleAdvisor(sqlite_db, outcome_tracker, memory, MagicMock(), engine)
+        baselines = advisor._collect_baseline_summary()
+
+        rule_performance = [{
+            "rule_name": "forecast_rule",
+            "sample_count": 4,
+            "avg_effectiveness": 0.6,
+            "success_rate": 0.75,
+        }]
+        suggestions = advisor._deterministic_gap_analysis(baselines, rule_performance)
+        forecast_suggestions = [s for s in suggestions if s["field"] == "forecast_threshold"]
+        assert forecast_suggestions == [], "Effective rule's forecast should NOT be flagged as stale"
+
+    def test_too_sensitive_capped(self, sqlite_db):
+        """Too-sensitive adjustment is capped at ±25% of original threshold."""
+        engine = _make_engine([
+            Rule(
+                name="lights_off_night",
+                description="Turn off lights at night",
+                condition=RuleCondition(sensor="light1", operator=">", threshold=100, duration_seconds=0),
+                action=RuleAction(target="relay3", action="set", value=False, reason="Night"),
+            ),
+        ])
+        memory = CortexMemory(sqlite_db)
+        _seed_device(sqlite_db)
+        _seed_outcomes(sqlite_db, count=0)
+        outcome_tracker = OutcomeTracker(sqlite_db, MagicMock())
+
+        # avg=800, std=5 → uncapped suggestion would be ~810 (avg+2σ)
+        # metric must match guess_sensor_type("light1") → "light_level"
+        _seed_baselines(memory, avg=800.0, std_dev=5.0, metric="light_level")
+
+        advisor = RuleAdvisor(sqlite_db, outcome_tracker, memory, MagicMock(), engine)
+        baselines = advisor._collect_baseline_summary()
+
+        # No rule_performance → guard inactive, too-sensitive fires
+        suggestions = advisor._deterministic_gap_analysis(baselines, None)
+        sensitive = [s for s in suggestions if "fires too often" in s.get("reason", "")]
+        assert len(sensitive) == 1
+        # Without cap: 810.0; with 25% cap: 100 + 100*0.25 = 125.0
+        assert sensitive[0]["suggested_value"] == 125.0
+
+    def test_too_sensitive_cap_with_zero_threshold(self, sqlite_db):
+        """Cap handles threshold=0 gracefully (max_delta=0 → cap skipped)."""
+        engine = _make_engine([
+            Rule(
+                name="zero_rule",
+                description="Zero threshold rule",
+                condition=RuleCondition(sensor="temp1", operator=">", threshold=0, duration_seconds=0),
+                action=RuleAction(target="relay1", action="set", value=True, reason="Test"),
+            ),
+        ])
+        memory = CortexMemory(sqlite_db)
+        _seed_device(sqlite_db)
+        _seed_outcomes(sqlite_db, count=0)
+        outcome_tracker = OutcomeTracker(sqlite_db, MagicMock())
+
+        # avg=21, std=1 → uncapped suggestion = 23.0; cap = 0*0.25 = 0 → skipped
+        _seed_baselines(memory, avg=21.0, std_dev=1.0)
+
+        advisor = RuleAdvisor(sqlite_db, outcome_tracker, memory, MagicMock(), engine)
+        baselines = advisor._collect_baseline_summary()
+
+        suggestions = advisor._deterministic_gap_analysis(baselines, None)
+        sensitive = [s for s in suggestions if "fires too often" in s.get("reason", "")]
+        assert len(sensitive) == 1
+        # threshold=0, max_delta=0 → cap skipped, full suggestion applies
+        assert sensitive[0]["suggested_value"] == 23.0
+
+
 class TestMergeSuggestions:
 
     def test_deduplicates_prefers_higher_confidence(self, sqlite_db):
@@ -1057,3 +1302,5 @@ class TestDuplicateSuggestionGuard:
         result2 = advisor.analyze()
         thresh2 = [r for r in result2 if r["field"] == "threshold"]
         assert len(thresh2) == 1
+
+

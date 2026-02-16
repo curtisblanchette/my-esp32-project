@@ -10,16 +10,19 @@ The same device capabilities that drive the firmware also drive the UI. When a d
 
 AI operates on two independent paths that converge on MQTT as a shared command bus. The [Cortex backend](#cortex-backend) subscribes to device telemetry and continuously evaluates a [YAML rules engine](#configuration) — threshold conditions with duration guards and cooldown timers that prevent false positives and rapid toggling. When readings exceed rule boundaries (e.g., temperature above 25°C for 15 seconds), it publishes commands directly to devices without human intervention. For anomalies the rules can't handle, like rapid temperature swings exceeding 5°C per minute, the engine [escalates to a local Ollama LLM](#decision-flow) for reasoning. The same backend interprets natural language from [chat and voice](#voice--chat-processing-pipeline) through the same Ollama model, which returns structured JSON intents (command, query, history, analyze) that are executed identically regardless of input method. Devices don't know whether a command came from a rule, the LLM, or a user — they all arrive as the same [MQTT message](#message-envelope-format-v1).
 
+<img src="screenshots/carousel.gif" alt="Mycelium" width="830" />
+
 - **[Configuration-driven devices](#device-registry)** — declare sensors and actuators in `registry.json`, flash, and go
 - **[Dynamic dashboard](#web-dashboard)** — device panels, controls, and charts generated from device capabilities
-- **[Autonomous rules engine](#ai-prefrontal)** — YAML-defined thresholds with trend conditions, time-of-day windows, duration guards, cooldowns, and LLM escalation
+- **[Autonomous rules engine](#ai-prefrontal)** — SQLite-backed rules with full CRUD UI, trend conditions, time-of-day windows, duration guards, cooldowns, and LLM escalation (seeded from YAML on first run)
 - **[Predictive forecasting](#how-it-works)** — linear projection and EWMA smoothing to act before thresholds are breached
 - **[Baseline learning](#how-it-works)** — per-device, per-hour baselines for "unusual for this time of day" detection
 - **[Outcome tracking](#how-it-works)** — commands correlated with sensor effects, effectiveness scored and fed back to LLM
-- **[Adaptive learning](#how-it-works)** — Rule Advisor analyzes outcome data every 6 hours, uses LLM to suggest threshold/timing adjustments, auto-applies high-confidence changes
+- **[Adaptive learning](#how-it-works)** — Rule Advisor analyzes outcome data every 6 hours, uses LLM to suggest threshold/timing adjustments, auto-applies high-confidence changes (persisted to SQLite)
 - **[Multi-device coordination](#how-it-works)** — cross-device rules with `scope` (read from any/all devices) and `target_scope` (send to all/specific devices)
-- **[Nerve Center](#web-dashboard)** — dedicated control page for viewing/toggling rules, managing suggestions, inspecting baselines, and monitoring system health
+- **[Nerve Center](#web-dashboard)** — dedicated control page for managing rules (CRUD), reviewing suggestions, inspecting baselines, and monitoring system health
 - **Human observation logging** — log plant-health events sensors can't detect (mold, pests, wilting) via the Activity Center
+- **Generic sensor pipeline** — entire telemetry pipeline is sensor-type agnostic; add any sensor type and it flows through MQTT, Redis, SQLite, rules, charts, and baselines automatically
 - **[Natural language control](#voice--chat-processing-pipeline)** — chat and voice commands interpreted by Ollama into structured intents
 - **HOT data** stored in [Redis](#redis) (48-hour retention)
 - **COLD data** aggregated in [SQLite](#sqlite) (historical trends)
@@ -506,12 +509,14 @@ flowchart TB
 
 | Table | Purpose |
 |-------|---------|
-| `sensor_readings` | Historical sensor readings |
+| `sensor_values` | Generic per-sensor telemetry (EAV: device_id, sensor_id, ts, value) |
+| `sensor_readings` | Legacy historical readings (kept for migration, not actively written) |
 | `commands` | Command history with status |
 | `events` | Device events log |
 | `devices` | Device registry with actuator state and display order |
 | `cortex_baselines` | Per-device, per-sensor, per-hour learned baselines (Welford's algorithm) |
 | `cortex_outcomes` | Command effectiveness scores with pre/post sensor snapshots (Phase 2) |
+| `cortex_rules` | Automation rules — single source of truth (seeded from YAML on first run) |
 | `cortex_suggestions` | Rule adjustment suggestions from the Rule Advisor (Phase 4) |
 
 ### Cortex Backend
@@ -537,8 +542,11 @@ flowchart TB
 | `/api/cortex/baselines/:id` | GET | Learned hourly baselines for a device |
 | `/api/cortex/adjustments` | GET | Rule adjustment suggestions (`?status=pending\|applied\|rejected`) |
 | `/api/cortex/adjustments/:id` | POST | Approve or reject a suggestion |
-| `/api/cortex/rules` | GET | In-memory rules with enabled/modified state |
-| `/api/cortex/rules/{name}` | PATCH | Toggle rule enabled state |
+| `/api/cortex/rules` | GET | All rules from SQLite with enabled/modified/source state |
+| `/api/cortex/rules` | POST | Create a new rule |
+| `/api/cortex/rules/{id}` | PUT | Update an existing rule by UUID |
+| `/api/cortex/rules/{id}` | PATCH | Toggle rule enabled state |
+| `/api/cortex/rules/{id}` | DELETE | Delete a rule (cascades to suggestions) |
 | `/api/chat/stream` | POST | Streaming chat (SSE) |
 | `/api/voice/transcribe` | POST | Audio → Text (Vosk STT) |
 | `/api/voice/synthesize` | POST | Text → Audio (Kokoro TTS) |
@@ -547,7 +555,7 @@ flowchart TB
 **WebSocket Endpoint:** `ws://localhost:8000/ws`
 
 Message Types:
-- `{type: "latest", data: LatestReading}` - Sensor updates (per device)
+- `{type: "latest", data: {readings: {sensor_id: value, ...}, updatedAt, deviceId}}` - Sensor updates (per device)
 - `{type: "relays", data: RelayConfig[]}` - Relay state changes
 - `{type: "devices", data: Device[]}` - Device registry updates
 - `{type: "commands", data: Command[]}` - Command history
@@ -571,7 +579,7 @@ Message Types:
   - Human observation logging (mold, pests, wilting, etc.) via Activity Center
   - **Nerve Center** — dedicated Cortex control page with tabs:
     - **Overview**: system health stats, advisor controls, pending suggestions
-    - **Rules**: view/toggle all automation rules with category badges and detail expansion
+    - **Rules**: full CRUD for automation rules — create, edit, delete, toggle — with category-grouped card grid
     - **Suggestions**: filterable approve/reject interface for rule adjustments
     - **Baselines**: 24h sensor baseline charts with ±1σ bands per device
   - Voice command input
@@ -608,14 +616,16 @@ flowchart TB
 3. **LLM Escalation** - Complex patterns escalate to Ollama with enriched context (trend analysis, forecasts, baseline sigma deviations, past command effectiveness)
 4. **Outcome Tracking** - After a command fires, `OutcomeTracker` snapshots sensor state, checks at 1m/5m/10m intervals, and scores effectiveness (-1.0 to +1.0). Results persist to SQLite and feed back into LLM prompts
 5. **Baseline Learning** - Per-device, per-sensor, per-hour baselines accumulate incrementally via Welford's online algorithm, enabling "unusual for this time of day" detection
-6. **Adaptive Learning** - Every 6 hours, the `RuleAdvisor` analyzes outcome effectiveness, baselines, and human observations, then uses the LLM to suggest rule threshold/timing adjustments. High-confidence threshold changes auto-apply; others await approval via the `/api/cortex/adjustments` API
+6. **Adaptive Learning** - Every 6 hours, the `RuleAdvisor` analyzes outcome effectiveness, baselines, and human observations, then uses the LLM to suggest rule threshold/timing adjustments. High-confidence threshold changes (≥0.8) auto-apply and persist to SQLite; others await approval via the `/api/cortex/adjustments` API. An **effectiveness guard** protects rules that are already working well (avg effectiveness >0.5, ≥3 outcomes) from being over-corrected, and a **±25% cap** prevents drastic single-pass threshold changes
 7. **Multi-Device Coordination** - Rules can use `scope: any` to trigger when any device exceeds a threshold, `scope: all` to require all devices, or `scope: <device_id>` to read from a specific device. `target_scope: all` sends commands to every device with the target actuator
 8. **Direct MQTT** - AI subscribes to telemetry and publishes commands directly
 9. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
 
 ### Configuration
 
-Rules are defined in `apps/cortex/config/rules.yaml`:
+Rules are stored in SQLite (`cortex_rules` table) as the single source of truth. On first startup, rules are seeded from `apps/cortex/config/rules.yaml` into the database. After seeding, all rule management happens through the CRUD API and Nerve Center UI — the YAML file is only read again for LLM configuration.
+
+Example seed rules in `apps/cortex/config/rules.yaml`:
 
 ```yaml
 rules:
@@ -778,7 +788,29 @@ cd apps/cortex
 pytest tests/ -m "not e2e" -v
 ```
 
-Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, forecast conditions, baseline deviation, cooldowns, YAML loading, LLM escalation), `forecaster.py` (linear forecast, EWMA, breach detection, baseline deviation), `observations.py` (endpoint validation, storage, broadcast), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries), `rule_advisor.py` (LLM analysis, auto-apply, approve/reject, confidence gating, observation correlation), `cortex_api.py` (status, baselines, adjustments, rules endpoints), `coordinator.py` (cross-device state queries, actuator lookups), `cross_device_rules.py` (scope any/all/self/device_id, target_scope all/self/device_id, shared state tracking, YAML loading).
+Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, forecast conditions, baseline deviation, cooldowns, YAML loading, SQLite loading, LLM escalation), `forecaster.py` (linear forecast, EWMA, breach detection, baseline deviation), `observations.py` (endpoint validation, storage, broadcast), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries), `rule_advisor.py` (LLM analysis, auto-apply, approve/reject, confidence gating, observation correlation), `cortex_api.py` (status, baselines, adjustments, rules CRUD endpoints), `rules_crud.py` (SQLite CRUD, seed from YAML, cascade delete, engine loading), `suggestion_cleanup.py` (rejected suggestion purge, cleanup job), `coordinator.py` (cross-device state queries, actuator lookups), `cross_device_rules.py` (scope any/all/self/device_id, target_scope all/self/device_id, shared state tracking, YAML loading), `sensor_values.py` (EAV table CRUD, bucketed queries, migration from legacy schema), `sensor_meta.py` (sensor type resolution, unit/label helpers), `simulation_grow_tent.py` (physics engine, actuator effects, cross-variable correlations, chart output), `simulation_adaptive.py` (outcome tracking, baseline learning, adaptive loop, suboptimal rule improvement), `simulation_multi_day.py` (ambient schedule, multi-day runner, adaptive convergence, multi-day chart generation).
+
+#### Grow Tent Simulation (offline, no external services)
+```bash
+cd apps/cortex
+
+# Standard simulation — 3-hour grow tent with physics engine + real DecisionEngine
+python -m simulations.grow_tent
+
+# Adaptive learning — Phase 1 (original rules) → gap analysis → Phase 2 (adjusted rules)
+python -m simulations.grow_tent --adaptive
+
+# Best demo — suboptimal rules get corrected by the Rule Advisor
+python -m simulations.grow_tent --adaptive --suboptimal
+
+# Multi-day simulation — 72h continuous run with 12h Rule Advisor checkpoints
+python -m simulations.grow_tent --multi-day --suboptimal -v
+
+# Custom parameters
+python -m simulations.grow_tent --duration 360 --start-hour 6 --ambient-temp 32 --no-noise -v
+```
+
+Output charts saved to `apps/cortex/simulations/output/`. The simulation models a sealed grow tent with correlated physics (temperature, humidity, soil moisture, light), actuator effects (fan, exhaust, humidifier, dehumidifier, irrigation, grow light), and cross-variable interactions (heat accelerates soil drying, wet soil raises humidity). The adaptive mode runs two phases and uses the real `RuleAdvisor._deterministic_gap_analysis()` to detect unreachable thresholds and suggest corrections. The multi-day mode runs a continuous 72-hour simulation with a sinusoidal day/night ambient temperature cycle (peak 32°C at 2pm, trough 20°C at 2am), periodic Rule Advisor checkpoints every 12 hours, convergence detection, and a 4-panel chart showing temperature/humidity timelines, effectiveness trajectory, and suggestion counts per phase.
 
 #### E2E Simulation Tests (requires running stack)
 ```bash

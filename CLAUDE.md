@@ -17,6 +17,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `pytest tests/ -m e2e` - Run e2e tests (requires Mosquitto + Redis + Cortex running)
 - `pytest tests/ -v` - Run all tests with verbose output
 
+**Simulation (`apps/cortex`)**
+- `python -m simulations.grow_tent` - Run standard grow tent simulation (3h, 30s steps)
+- `python -m simulations.grow_tent --adaptive` - Run adaptive learning simulation (Phase 1 → gap analysis → Phase 2)
+- `python -m simulations.grow_tent --adaptive --suboptimal` - Adaptive with deliberately bad rules (best demo)
+- `python -m simulations.grow_tent --multi-day --suboptimal -v` - Multi-day simulation (72h, 12h checkpoints, periodic Rule Advisor)
+- `python -m simulations.grow_tent --duration 360 --start-hour 6` - Custom duration/start
+- `pytest tests/test_simulation_grow_tent.py tests/test_simulation_adaptive.py tests/test_simulation_multi_day.py -v` - Simulation tests
+
 **Device Tools**
 - `./tools/flash.sh <device-id>` - Upload MicroPython code to ESP32 via mpremote
 - `./tools/flash.sh <device-id> --erase` - Full flash with MicroPython firmware
@@ -55,7 +63,7 @@ ESP32 (MicroPython) → MQTT → Cortex (Python/FastAPI) → Redis (HOT) + SQLit
 - `OutcomeTracker` correlates commands with their measurable sensor effects
 - Lifecycle: `track_command` (pre-snapshot) → `handle_ack` → `check_outcomes` (at 1m/5m/10m) → score → store
 - Effectiveness scored from -1.0 (made it worse) to +1.0 (strong improvement), weighted across intervals (20%/50%/30%)
-- Target metric and desired direction inferred from command `reason` string keywords
+- Target metric and desired direction inferred from: (1) command `reason` string keywords, (2) metric-aware ON/OFF mapping (`ON_DIRECTION_BY_METRIC`), (3) legacy fallback
 - Completed outcomes persist to `cortex_outcomes` table; effectiveness summaries feed into LLM prompts
 
 **Forecasting (Phase 3):**
@@ -72,9 +80,12 @@ ESP32 (MicroPython) → MQTT → Cortex (Python/FastAPI) → Redis (HOT) + SQLit
 - High-confidence threshold adjustments (>= 0.8) auto-apply to in-memory rules
 - Lower-confidence or non-threshold suggestions require manual approval via API
 - Suggestions stored in `cortex_suggestions` table with status tracking (pending/applied/rejected)
-- Applied suggestions modify in-memory rules only — `rules.yaml` remains the user-authored source of truth
+- Applied suggestions persist to SQLite via `update_rule_condition_field()` — surviving restarts
 - Background job runs via `start_rule_advisor_job()` using `asyncio.to_thread()` for LLM calls
 - Suggestions broadcast to Activity Center via WebSocket (`{type: "suggestions"}`) for real-time approve/reject
+- **Effectiveness Guard**: Rules with high effectiveness (avg >0.5, ≥3 outcomes) are protected from "unreachable", "too-sensitive", and "stale forecast" suggestions — prevents the advisor from breaking rules that are already working well
+- **Too-sensitive cap**: Threshold adjustments from `_detect_too_sensitive()` are capped at ±25% of the original value (`TOO_SENSITIVE_MAX_CHANGE_PCT`), preventing drastic jumps like 100→811
+- **Confidence filtering**: Simulation runner only auto-applies suggestions with confidence ≥ `AUTO_APPLY_CONFIDENCE` (0.8), matching production behavior
 
 **Multi-Device Coordination (Phase 5):**
 - `Coordinator` provides cross-device state queries via `WebSocketServer._latest_by_device` and `SqliteClient` device registry
@@ -121,14 +132,23 @@ flowchart TB
 
 **Monorepo Structure:**
 - `apps/cortex` - Python/FastAPI unified backend (REST API, WebSocket, MQTT, rules engine, voice, LLM)
+- `apps/cortex/simulations` - Grow tent simulation framework (physics engine, runner, charts, adaptive learning)
 - `apps/web` - React/Vite dashboard with Chart.js visualizations
 - `device/` - MicroPython code for ESP32 sensors
 - `tools/` - Device management shell scripts
 
+**Generic Sensor Pipeline:**
+- The entire telemetry pipeline is sensor-type agnostic — no hardcoded temp/humidity assumptions
+- MQTT ingestion loops ALL numeric readings from device payloads into `readings: dict[str, float]`
+- `sensor_meta.py` provides `guess_sensor_type()`, `sensor_unit()`, `sensor_label()` for sensor ID resolution
+- `sensor_values` EAV table stores one row per sensor per timestamp (replaces fixed-column `sensor_readings`)
+- Frontend renders sensors dynamically from device capabilities (special gauges for temp/humidity, generic readouts for others)
+
 **Storage Strategy:**
-- **Redis** - Raw readings with 48-hour TTL (HOT data)
-- **SQLite** - Aggregated historical data (COLD data)
-- `DataReader` merges both sources for queries and decision context
+- **Redis** - Raw readings with 48-hour TTL (HOT data), stored as `{readings: {sensor_id: value}, ...}`
+- **SQLite** - Aggregated historical data (COLD data) in `sensor_values` EAV table
+- `DataReader` merges both sources into `MergedReading(ts, readings: dict[str, float], device_id)` for queries and decision context
+- `cortex_rules` table is the single source of truth for automation rules (seeded from YAML on first run)
 - `cortex_baselines` table stores learned per-hour sensor baselines
 - `cortex_outcomes` table stores command effectiveness scores (Phase 2)
 - `cortex_suggestions` table stores rule adjustment suggestions from the Rule Advisor (Phase 4)
@@ -167,13 +187,16 @@ flowchart TB
 **Observations**
 - `POST /api/observations` - Log human observation (`{deviceId, category, notes?}`)
 
-**Cortex Intelligence (Phase 4+6)**
+**Cortex Intelligence (Phase 4+6+7)**
 - `GET /api/cortex/status` - System intelligence overview (outcomes, baselines, suggestions counts)
 - `GET /api/cortex/baselines/:deviceId` - Learned hourly baselines for a device
 - `GET /api/cortex/adjustments` - Rule adjustment suggestions (`?status=pending|applied|rejected`)
 - `POST /api/cortex/adjustments/:id` - Approve or reject a suggestion (`{action: "approve"|"reject"}`)
-- `GET /api/cortex/rules` - In-memory rules with enabled/modified state
-- `PATCH /api/cortex/rules/{name}` - Toggle rule enabled state (`{enabled: boolean}`)
+- `GET /api/cortex/rules` - All rules from SQLite with enabled/modified/source state
+- `POST /api/cortex/rules` - Create a new rule (`{name, description, condition, action, enabled}`)
+- `PUT /api/cortex/rules/{id}` - Update an existing rule by UUID
+- `PATCH /api/cortex/rules/{id}` - Toggle rule enabled state (`{enabled: boolean}`)
+- `DELETE /api/cortex/rules/{id}` - Delete a rule (cascades to suggestions)
 
 **Chat (NLP)**
 - `POST /api/chat` - Process natural language command
@@ -201,16 +224,17 @@ flowchart TB
 - `apps/cortex/src/main.py` - Entry point: starts API server, MQTT, decision engine
 - `apps/cortex/src/voice_api.py` - Unified FastAPI app (lifespan, routes, WebSocket, health)
 - `apps/cortex/src/config.py` - Environment variable configuration
-- `apps/cortex/src/services/sqlite_client.py` - SQLite schema, migrations, all CRUD queries
-- `apps/cortex/src/services/redis_client.py` - Redis client with 48hr TTL storage
-- `apps/cortex/src/services/mqtt_client.py` - MQTT subscriber/publisher with storage + broadcast
+- `apps/cortex/src/services/sqlite_client.py` - SQLite schema, migrations, all CRUD queries (includes `sensor_values` EAV table)
+- `apps/cortex/src/services/redis_client.py` - Redis client with 48hr TTL storage (`RedisReading.readings: dict`)
+- `apps/cortex/src/services/mqtt_client.py` - MQTT subscriber/publisher with generic sensor ingestion + broadcast
+- `apps/cortex/src/services/sensor_meta.py` - Sensor type resolution: `guess_sensor_type()`, `sensor_unit()`, `sensor_label()`
 - `apps/cortex/src/services/websocket_server.py` - WebSocket server + broadcast functions
 - `apps/cortex/src/services/ollama_client.py` - Ollama LLM client (chat intents + decision engine)
 - `apps/cortex/src/services/intent_executor.py` - Shared intent executor for chat + voice routes
 - `apps/cortex/src/services/analysis.py` - Sensor data analysis, trend context, rate-of-change
 - `apps/cortex/src/services/data_reader.py` - Unified Redis+SQLite telemetry read layer
 - `apps/cortex/src/services/cortex_memory.py` - Per-device hourly baseline tracking (Welford's algorithm)
-- `apps/cortex/src/services/background_jobs.py` - Aggregation (Redis→SQLite) + command expiration + rule advisor periodic job
+- `apps/cortex/src/services/background_jobs.py` - Aggregation (Redis→SQLite) + command expiration + rule advisor + suggestion cleanup periodic jobs
 - `apps/cortex/src/services/decision_engine.py` - Rules engine with trend/time-of-day/forecast/baseline-deviation/cross-device conditions + LLM escalation
 - `apps/cortex/src/services/coordinator.py` - Cross-device state provider for multi-device rule evaluation (Phase 5)
 - `apps/cortex/src/services/forecaster.py` - Sensor forecasting: linear projection, EWMA smoothing, breach prediction, baseline deviation (Phase 3)
@@ -218,7 +242,7 @@ flowchart TB
 - `apps/cortex/src/services/rule_advisor.py` - Rule Advisor: LLM-powered rule analysis, auto-apply, approve/reject (Phase 4)
 - `apps/cortex/src/services/voice_service.py` - STT (Vosk) + TTS (Kokoro)
 - `apps/cortex/src/api/` - REST route handlers (telemetry, devices, relays, commands, events, observations, cortex, chat, voice)
-- `apps/cortex/config/rules.yaml` - Automation rules (threshold, trend, forecast, baseline deviation, cross-device scope)
+- `apps/cortex/config/rules.yaml` - Seed file for automation rules (imported to SQLite on first run, then LLM config only)
 - `apps/cortex/tests/conftest.py` - Test fixtures (sqlite_db, mock_redis, telemetry_factory)
 - `apps/cortex/tests/test_analysis.py` - Unit tests: stats, trends, rate-of-change
 - `apps/cortex/tests/test_cortex_memory.py` - Unit tests: baseline tracking (Welford's)
@@ -226,19 +250,36 @@ flowchart TB
 - `apps/cortex/tests/test_decision_engine.py` - Unit tests: rules, trend/time-of-day/forecast/baseline conditions
 - `apps/cortex/tests/test_forecaster.py` - Unit tests: linear forecast, EWMA, breach detection, baseline deviation
 - `apps/cortex/tests/test_observations.py` - Unit tests: observation endpoint validation, storage, broadcast
-- `apps/cortex/tests/test_outcome_tracker.py` - Unit tests: outcome tracking, scoring, lifecycle
+- `apps/cortex/tests/test_outcome_tracker.py` - Unit tests: outcome tracking, scoring, lifecycle, metric-aware direction inference
 - `apps/cortex/tests/test_rule_advisor.py` - Unit tests: rule advisor analysis, auto-apply, approve/reject, LLM parsing
-- `apps/cortex/tests/test_cortex_api.py` - Unit tests: /api/cortex routes (status, baselines, adjustments, rules)
+- `apps/cortex/tests/test_cortex_api.py` - Unit tests: /api/cortex routes (status, baselines, adjustments, rules CRUD)
+- `apps/cortex/tests/test_rules_crud.py` - Unit tests: SQLite rules CRUD, seed from YAML, engine loading from SQLite
+- `apps/cortex/tests/test_suggestion_cleanup.py` - Unit tests: rejected suggestion purge logic and cleanup job
 - `apps/cortex/tests/test_coordinator.py` - Unit tests: cross-device state provider (Phase 5)
 - `apps/cortex/tests/test_cross_device_rules.py` - Unit tests: scope/target_scope rule evaluation, YAML loading, state tracking (Phase 5)
+- `apps/cortex/tests/test_sensor_values.py` - Unit tests: sensor_values EAV table CRUD, bucketing, migration
+- `apps/cortex/tests/test_sensor_meta.py` - Unit tests: sensor type guessing, unit/label resolution
 - `apps/cortex/tests/test_e2e_flow.py` - E2E tests: MQTT→API→Storage flow (requires running services)
+
+**Simulation Framework:**
+- `apps/cortex/simulations/__init__.py` - Package init
+- `apps/cortex/simulations/grow_tent.py` - CLI entry point with `--adaptive`, `--multi-day`, and `--suboptimal` flags
+- `apps/cortex/simulations/environment.py` - Physics engine: temperature, humidity, soil moisture, light with actuator effects, cross-variable correlations, and day/night ambient schedule (`default_ambient_schedule()`)
+- `apps/cortex/simulations/runner.py` - SimulationRunner (time-stepping loop with DecisionEngine), outcome tracking, baseline learning, `run_adaptive()` for before/after comparison, `run_multi_day()` for continuous multi-day simulation with periodic Rule Advisor checkpoints and convergence detection
+- `apps/cortex/simulations/charts.py` - Matplotlib visualization: 4-panel timeseries (`plot_simulation`), adaptive comparison charts (`plot_adaptive`), and multi-day timeline with effectiveness trajectory (`plot_multi_day`)
+- `apps/cortex/simulations/scenarios/grow_tent_rules.py` - Well-tuned grow tent rule set (12 rules)
+- `apps/cortex/simulations/scenarios/suboptimal_rules.py` - Deliberately bad thresholds for adaptive learning demo
+- `apps/cortex/tests/test_simulation_grow_tent.py` - Tests: physics engine, actuator effects, cross-variable correlations, full simulation, chart output
+- `apps/cortex/tests/test_simulation_adaptive.py` - Tests: outcome tracking, baseline learning, adaptive loop, suboptimal rule improvement, chart generation
+- `apps/cortex/tests/test_simulation_multi_day.py` - Tests: ambient schedule, multi-day runner, adaptive learning convergence, multi-day chart generation
 
 **Web:**
 - `apps/web/src/App.tsx` - App shell with routing, shared state, header navigation
 - `apps/web/src/pages/Dashboard.tsx` - Main dashboard with device panels and drag-and-drop
 - `apps/web/src/pages/NerveCenter.tsx` - Nerve Center page (rules, suggestions, baselines, system health)
 - `apps/web/src/components/NerveCenterOverview.tsx` - System health stats and advisor controls
-- `apps/web/src/components/NerveCenterRules.tsx` - Rule list with enable/disable toggle
+- `apps/web/src/components/NerveCenterRules.tsx` - Rule card grid with CRUD (create/edit/delete), category grouping, toggle
+- `apps/web/src/components/RuleFormModal.tsx` - Centered modal form for creating/editing rules
 - `apps/web/src/components/NerveCenterSuggestions.tsx` - Suggestion management with approve/reject
 - `apps/web/src/components/NerveCenterBaselines.tsx` - 24h baseline charts per device (Chart.js)
 - `apps/web/src/hooks/useWebSocket.ts` - WebSocket connection with device/event/command/rules handlers
@@ -300,11 +341,12 @@ flowchart TB
 
 **Key Component Files:**
 - `apps/web/src/styles.css` - Global styles, Tailwind config, custom components
-- `apps/web/src/components/SensorCard.tsx` - Combined temp/humidity gauges with charts
+- `apps/web/src/components/SensorCard.tsx` - Capabilities-driven sensor gauges and charts (special gauges for temp/humidity, generic readouts for others)
 - `apps/web/src/components/DevicePanel.tsx` - Per-device panel with drag-and-drop (via @dnd-kit)
 - `apps/web/src/components/ChatInput.tsx` - AI assistant input
 - `apps/web/src/components/ActivityCenter.tsx` - Activity feed (slide-out drawer)
-- `apps/web/src/components/NerveCenterRules.tsx` - Rule toggle list with category badges
+- `apps/web/src/components/NerveCenterRules.tsx` - Rule card grid with CRUD, category grouping, inline delete confirmation
+- `apps/web/src/components/RuleFormModal.tsx` - Centered modal for rule create/edit with collapsible advanced conditions
 - `apps/web/src/components/NerveCenterBaselines.tsx` - 24h baseline charts with ±1σ bands
 
 **Drag-and-Drop Notes:**

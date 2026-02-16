@@ -1,6 +1,5 @@
 export type LatestReading = {
-  temp: number;
-  humidity: number;
+  readings: Record<string, number>;
   updatedAt: number;
   sourceTopic?: string;
   sourceIp?: string;
@@ -9,8 +8,7 @@ export type LatestReading = {
 
 export type HistoryPoint = {
   ts: number;
-  temp: number;
-  humidity: number;
+  readings: Record<string, number>;
   count?: number;
 };
 
@@ -32,7 +30,7 @@ export type Device = {
   platform: string | null;
   firmware: string | null;
   capabilities: {
-    sensors: Array<{ id: string; type: string; name?: string }>;
+    sensors: Array<{ id: string; type: string; name?: string; unit?: string }>;
     actuators: Array<{ id: string; type: string; pin?: number; name?: string }>;
   };
   telemetryIntervalMs: number | null;
@@ -67,10 +65,30 @@ export type DeviceEvent = {
   source?: string;
 };
 
+/** Normalize a latest reading from either old {temp,humidity} or new {readings:{...}} format. */
+export function normalizeLatest(raw: Record<string, unknown> | null): LatestReading | null {
+  if (!raw) return null;
+  if (raw.readings && typeof raw.readings === "object") return raw as unknown as LatestReading;
+  // Legacy format: {temp, humidity, updatedAt, ...} → {readings: {temp1: val, hum1: val}, ...}
+  const readings: Record<string, number> = {};
+  if (typeof raw.temp === "number") readings.temp1 = raw.temp;
+  if (typeof raw.humidity === "number") readings.hum1 = raw.humidity;
+  return { readings, updatedAt: raw.updatedAt as number, sourceTopic: raw.sourceTopic as string | undefined, deviceId: raw.deviceId as string | undefined };
+}
+
+/** Normalize a history point from either old {ts,temp,humidity} or new {ts,readings:{...}} format. */
+function normalizeHistoryPoint(raw: Record<string, unknown>): HistoryPoint {
+  if (raw.readings && typeof raw.readings === "object") return raw as unknown as HistoryPoint;
+  const readings: Record<string, number> = {};
+  if (typeof raw.temp === "number") readings.temp1 = raw.temp;
+  if (typeof raw.humidity === "number") readings.hum1 = raw.humidity;
+  return { ts: raw.ts as number, readings, count: raw.count as number | undefined };
+}
+
 export async function fetchLatest(signal?: AbortSignal): Promise<LatestReading | null> {
   const r = await fetch("/api/latest", { cache: "no-store", signal });
-  const data = (await r.json()) as { ok: boolean; latest: LatestReading | null };
-  return data.latest ?? null;
+  const data = (await r.json()) as { ok: boolean; latest: Record<string, unknown> | null };
+  return normalizeLatest(data.latest);
 }
 
 export async function fetchHistory(args: {
@@ -88,8 +106,8 @@ export async function fetchHistory(args: {
     url += `&deviceId=${encodeURIComponent(args.deviceId)}`;
   }
   const r = await fetch(url, { cache: "no-store", signal: args.signal });
-  const data = (await r.json()) as { ok: boolean; points: HistoryPoint[] };
-  return Array.isArray(data.points) ? data.points : [];
+  const data = (await r.json()) as { ok: boolean; points: Record<string, unknown>[] };
+  return Array.isArray(data.points) ? data.points.map(normalizeHistoryPoint) : [];
 }
 
 export async function fetchRelayStatus(deviceId: string, signal?: AbortSignal): Promise<RelayStatus[]> {
@@ -216,14 +234,25 @@ export async function logObservation(args: {
 }
 
 // Chat types
+export type ProposedRule = {
+  name: string;
+  description: string;
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
+};
+
 export type ChatResponse = {
   ok: boolean;
   reply: string;
   action?: {
-    type: "command" | "query" | "none";
+    type: "command" | "query" | "none" | "proposed_rules" | "rules_activated";
     target?: string;
     sensor?: string;
     value?: boolean | number | string;
+    rules?: ProposedRule[];
+    count?: number;
+    location?: string;
+    goal?: string;
   };
 };
 
@@ -261,12 +290,13 @@ export async function checkChatHealth(): Promise<boolean> {
 
 export async function* sendChatStream(
   message: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  sessionId?: string,
 ): AsyncGenerator<StreamChatEvent> {
   const r = await fetch("/api/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, sessionId }),
     signal,
   });
 
@@ -432,6 +462,7 @@ export async function resolveAdjustment(
 // ── Cortex Rules API (Phase 6: Nerve Center) ────────────────────────
 
 export type CortexRule = {
+  id: string;
   name: string;
   description: string;
   enabled: boolean;
@@ -439,24 +470,27 @@ export type CortexRule = {
     sensor: string;
     operator: string;
     threshold: number;
-    duration_seconds: number;
+    duration_seconds?: number;
     trend?: string | null;
-    trend_window_minutes: number;
+    trend_window_minutes?: number;
     time_of_day?: { after: string; before: string } | null;
     forecast?: string | null;
     forecast_threshold?: number | null;
-    forecast_within_minutes: number;
+    forecast_within_minutes?: number;
     baseline_deviation?: number | null;
-    scope: string;
+    scope?: string;
   };
   action: {
     target: string;
     action: string;
     value: boolean | number | string;
     reason: string;
-    target_scope: string;
+    target_scope?: string;
   };
+  source: "yaml" | "user" | "generated";
   modified: boolean;
+  createdAt: number;
+  updatedAt: number;
 };
 
 export async function fetchRules(signal?: AbortSignal): Promise<CortexRule[]> {
@@ -465,11 +499,52 @@ export async function fetchRules(signal?: AbortSignal): Promise<CortexRule[]> {
   return Array.isArray(data.rules) ? data.rules : [];
 }
 
-export async function toggleRule(name: string, enabled: boolean): Promise<boolean> {
-  const r = await fetch(`/api/cortex/rules/${encodeURIComponent(name)}`, {
+export async function toggleRule(id: string, enabled: boolean): Promise<boolean> {
+  const r = await fetch(`/api/cortex/rules/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
+  });
+  const data = (await r.json()) as { ok: boolean };
+  return data.ok;
+}
+
+export async function createRule(rule: {
+  name: string;
+  description: string;
+  condition: CortexRule["condition"];
+  action: CortexRule["action"];
+  enabled?: boolean;
+}): Promise<{ ok: boolean; rule?: CortexRule; error?: string }> {
+  const r = await fetch("/api/cortex/rules", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(rule),
+  });
+  return (await r.json()) as { ok: boolean; rule?: CortexRule; error?: string };
+}
+
+export async function updateRule(
+  id: string,
+  rule: {
+    name: string;
+    description: string;
+    condition: CortexRule["condition"];
+    action: CortexRule["action"];
+    enabled?: boolean;
+  },
+): Promise<{ ok: boolean; rule?: CortexRule; error?: string }> {
+  const r = await fetch(`/api/cortex/rules/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(rule),
+  });
+  return (await r.json()) as { ok: boolean; rule?: CortexRule; error?: string };
+}
+
+export async function deleteRule(id: string): Promise<boolean> {
+  const r = await fetch(`/api/cortex/rules/${encodeURIComponent(id)}`, {
+    method: "DELETE",
   });
   const data = (await r.json()) as { ok: boolean };
   return data.ok;
@@ -480,10 +555,20 @@ export function hasSensor(device: Device, type: string): boolean {
   return device.capabilities.sensors.some((s) => s.type === type);
 }
 
-export function hasTempHumiditySensors(device: Device): boolean {
-  return hasSensor(device, "temperature") && hasSensor(device, "humidity");
+export function hasSensors(device: Device): boolean {
+  return device.capabilities.sensors.length > 0;
 }
 
 export function hasActuators(device: Device): boolean {
   return device.capabilities.actuators.length > 0;
+}
+
+/** Best-effort unit resolution from a sensor ID prefix. */
+export function guessSensorUnit(sensorId: string): string {
+  if (sensorId.startsWith("temp")) return "\u00b0C";
+  if (sensorId.startsWith("hum") || sensorId.startsWith("soil")) return "%";
+  if (sensorId.startsWith("light")) return "lux";
+  if (sensorId.startsWith("co2")) return "ppm";
+  if (sensorId.startsWith("pressure")) return "hPa";
+  return "";
 }

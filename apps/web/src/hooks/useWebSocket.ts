@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { LatestReading, RelayStatus, Device, DeviceEvent, Command, RuleSuggestion, CortexRule } from "../api";
+import { normalizeLatest, type LatestReading, type RelayStatus, type Device, type DeviceEvent, type Command, type RuleSuggestion, type CortexRule } from "../api";
 
 type WebSocketMessage =
   | { type: "latest"; data: LatestReading }
@@ -85,7 +85,8 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
           const message = JSON.parse(event.data) as WebSocketMessage;
 
           if (message.type === "latest" && onLatestReading) {
-            onLatestReading(message.data);
+            const normalized = normalizeLatest(message.data as unknown as Record<string, unknown>);
+            if (normalized) onLatestReading(normalized);
           } else if (message.type === "relays" && onRelayUpdate) {
             onRelayUpdate(message.data);
           } else if (message.type === "devices" && onDevicesUpdate) {

@@ -1,21 +1,41 @@
 import React, { useEffect, useRef, useState } from "react";
 import Chart from "chart.js/auto";
-import { fetchDeviceBaselines, type Device, type DeviceBaseline } from "../api";
+import { fetchDeviceBaselines, guessSensorUnit, type Device, type DeviceBaseline } from "../api";
 
 type BaselinesProps = {
   devices: Device[];
   addError: (message: string, source?: string) => void;
 };
 
+const METRIC_COLORS: Record<string, { border: string; bg: string }> = {
+  temperature:   { border: "rgb(239, 68, 68)",   bg: "rgba(239, 68, 68, 0.1)" },
+  humidity:      { border: "rgb(59, 130, 246)",   bg: "rgba(59, 130, 246, 0.1)" },
+  soil_moisture: { border: "rgb(52, 211, 153)",   bg: "rgba(52, 211, 153, 0.1)" },
+  light_level:   { border: "rgb(251, 191, 36)",   bg: "rgba(251, 191, 36, 0.1)" },
+  co2:           { border: "rgb(167, 139, 250)",  bg: "rgba(167, 139, 250, 0.1)" },
+  pressure:      { border: "rgb(156, 163, 175)",  bg: "rgba(156, 163, 175, 0.1)" },
+};
+const DEFAULT_METRIC_COLOR = { border: "rgb(148, 163, 184)", bg: "rgba(148, 163, 184, 0.1)" };
+
+function metricLabel(metric: string): string {
+  const labels: Record<string, string> = {
+    temperature: "Temperature",
+    humidity: "Humidity",
+    soil_moisture: "Soil Moisture",
+    light_level: "Light Level",
+    co2: "CO\u2082",
+    pressure: "Pressure",
+  };
+  return labels[metric] || metric.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export function NerveCenterBaselines({ devices, addError }: BaselinesProps): React.ReactElement {
   const [selectedDevice, setSelectedDevice] = useState<string>(devices[0]?.id ?? "");
   const [baselines, setBaselines] = useState<DeviceBaseline[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const tempChartRef = useRef<HTMLCanvasElement>(null);
-  const humChartRef = useRef<HTMLCanvasElement>(null);
-  const tempChartInstance = useRef<Chart | null>(null);
-  const humChartInstance = useRef<Chart | null>(null);
+  const chartRefs = useRef<Map<string, HTMLCanvasElement>>(new Map());
+  const chartInstances = useRef<Map<string, Chart>>(new Map());
 
   // Sync selectedDevice when devices arrive after mount
   useEffect(() => {
@@ -46,6 +66,9 @@ export function NerveCenterBaselines({ devices, addError }: BaselinesProps): Rea
     return () => controller.abort();
   }, [selectedDevice, addError]);
 
+  // Discover unique metrics from baselines
+  const uniqueMetrics = [...new Set(baselines.map((b) => b.metric))].sort();
+
   // Render charts when baselines change
   useEffect(() => {
     if (!baselines.length) return;
@@ -73,34 +96,44 @@ export function NerveCenterBaselines({ devices, addError }: BaselinesProps): Rea
       return { avgs, upperBounds, lowerBounds, samples };
     }
 
-    function renderChart(
-      canvas: HTMLCanvasElement | null,
-      existing: Chart | null,
-      metric: string,
-      label: string,
-      unit: string,
-      borderColor: string,
-      bgColor: string,
-    ): Chart | null {
-      if (!canvas) return null;
-      if (existing) existing.destroy();
+    // Destroy old charts
+    for (const [, chart] of chartInstances.current) {
+      chart.destroy();
+    }
+    chartInstances.current.clear();
 
-      const { avgs, upperBounds, lowerBounds } = buildDataset(metric);
+    for (const metric of uniqueMetrics) {
+      const canvas = chartRefs.current.get(metric);
+      if (!canvas) continue;
 
-      return new Chart(canvas, {
+      const colors = METRIC_COLORS[metric] || DEFAULT_METRIC_COLOR;
+      const unit = guessSensorUnit(metric.replace(/_/g, "").slice(0, 4));
+      // Better unit resolution: use the metric name directly
+      const displayUnit = (() => {
+        if (metric === "temperature") return "\u00B0C";
+        if (metric === "humidity" || metric === "soil_moisture") return "%";
+        if (metric === "light_level") return "lux";
+        if (metric === "co2") return "ppm";
+        if (metric === "pressure") return "hPa";
+        return unit;
+      })();
+
+      const { avgs, upperBounds, lowerBounds, samples } = buildDataset(metric);
+
+      const chart = new Chart(canvas, {
         type: "line",
         data: {
           labels: hours,
           datasets: [
             {
-              label: `Avg ${label}`,
+              label: `Avg ${metricLabel(metric)}`,
               data: avgs,
-              borderColor,
+              borderColor: colors.border,
               backgroundColor: "transparent",
               borderWidth: 2,
               pointRadius: hours.map((_, i) => (i === currentHour ? 5 : 2)),
-              pointBackgroundColor: hours.map((_, i) => (i === currentHour ? borderColor : "transparent")),
-              pointBorderColor: hours.map((_, i) => (i === currentHour ? "#fff" : borderColor)),
+              pointBackgroundColor: hours.map((_, i) => (i === currentHour ? colors.border : "transparent")),
+              pointBorderColor: hours.map((_, i) => (i === currentHour ? "#fff" : colors.border)),
               tension: 0.3,
               spanGaps: true,
             },
@@ -108,7 +141,7 @@ export function NerveCenterBaselines({ devices, addError }: BaselinesProps): Rea
               label: `+1\u03C3`,
               data: upperBounds,
               borderColor: "transparent",
-              backgroundColor: bgColor,
+              backgroundColor: colors.bg,
               fill: "+1",
               pointRadius: 0,
               tension: 0.3,
@@ -118,7 +151,7 @@ export function NerveCenterBaselines({ devices, addError }: BaselinesProps): Rea
               label: `-1\u03C3`,
               data: lowerBounds,
               borderColor: "transparent",
-              backgroundColor: bgColor,
+              backgroundColor: colors.bg,
               fill: "-1",
               pointRadius: 0,
               tension: 0.3,
@@ -136,10 +169,9 @@ export function NerveCenterBaselines({ devices, addError }: BaselinesProps): Rea
               callbacks: {
                 label: (ctx) => {
                   if (ctx.datasetIndex === 0) {
-                    const { samples } = buildDataset(metric);
-                    return `${ctx.parsed.y?.toFixed(1)}${unit} (${samples[ctx.dataIndex]} samples)`;
+                    return `${ctx.parsed.y?.toFixed(1)}${displayUnit} (${samples[ctx.dataIndex]} samples)`;
                   }
-                  return `${ctx.parsed.y?.toFixed(1)}${unit}`;
+                  return `${ctx.parsed.y?.toFixed(1)}${displayUnit}`;
                 },
               },
             },
@@ -154,35 +186,23 @@ export function NerveCenterBaselines({ devices, addError }: BaselinesProps): Rea
               ticks: {
                 color: "rgba(255,255,255,0.3)",
                 font: { size: 10 },
-                callback: (v) => `${v}${unit}`,
+                callback: (v) => `${v}${displayUnit}`,
               },
             },
           },
         },
       });
+
+      chartInstances.current.set(metric, chart);
     }
 
-    tempChartInstance.current = renderChart(
-      tempChartRef.current, tempChartInstance.current,
-      "temperature", "Temperature", "\u00B0C",
-      "rgb(239, 68, 68)", "rgba(239, 68, 68, 0.1)",
-    );
-    humChartInstance.current = renderChart(
-      humChartRef.current, humChartInstance.current,
-      "humidity", "Humidity", "%",
-      "rgb(59, 130, 246)", "rgba(59, 130, 246, 0.1)",
-    );
-
     return () => {
-      tempChartInstance.current?.destroy();
-      humChartInstance.current?.destroy();
-      tempChartInstance.current = null;
-      humChartInstance.current = null;
+      for (const [, chart] of chartInstances.current) {
+        chart.destroy();
+      }
+      chartInstances.current.clear();
     };
-  }, [baselines]);
-
-  const tempBaselines = baselines.filter((b) => b.metric === "temperature");
-  const humBaselines = baselines.filter((b) => b.metric === "humidity");
+  }, [baselines, uniqueMetrics.join(",")]);
 
   return (
     <div className="space-y-4">
@@ -210,25 +230,19 @@ export function NerveCenterBaselines({ devices, addError }: BaselinesProps): Rea
         </div>
       ) : (
         <>
-          {/* Temperature chart */}
-          {tempBaselines.length > 0 && (
-            <div className="rounded-xl border border-panel-border bg-panel/30 backdrop-blur-[6px] p-4">
-              <div className="text-xs font-medium opacity-60 mb-3">Temperature Baselines (24h)</div>
+          {uniqueMetrics.map((metric) => (
+            <div key={metric} className="rounded-xl border border-panel-border bg-panel/30 backdrop-blur-[6px] p-4">
+              <div className="text-xs font-medium opacity-60 mb-3">{metricLabel(metric)} Baselines (24h)</div>
               <div className="h-[200px]">
-                <canvas ref={tempChartRef} />
+                <canvas
+                  ref={(el) => {
+                    if (el) chartRefs.current.set(metric, el);
+                    else chartRefs.current.delete(metric);
+                  }}
+                />
               </div>
             </div>
-          )}
-
-          {/* Humidity chart */}
-          {humBaselines.length > 0 && (
-            <div className="rounded-xl border border-panel-border bg-panel/30 backdrop-blur-[6px] p-4">
-              <div className="text-xs font-medium opacity-60 mb-3">Humidity Baselines (24h)</div>
-              <div className="h-[200px]">
-                <canvas ref={humChartRef} />
-              </div>
-            </div>
-          )}
+          ))}
         </>
       )}
     </div>

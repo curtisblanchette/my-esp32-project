@@ -17,10 +17,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Map rule sensor IDs to the keys used in _latest_by_device
-SENSOR_TO_KEY = {"temp1": "temp", "hum1": "humidity"}
-
-
 class Coordinator:
     """Cross-device state provider for multi-device rule evaluation."""
 
@@ -43,8 +39,9 @@ class Coordinator:
         if not latest:
             return None
 
-        key = SENSOR_TO_KEY.get(sensor_id, sensor_id)
-        value = latest.get(key)
+        # Read from generic readings dict
+        readings = latest.get("readings", {})
+        value = readings.get(sensor_id)
 
         if isinstance(value, (int, float)):
             return float(value)
@@ -56,17 +53,17 @@ class Coordinator:
         Returns: {device_id: value} for every online device that has data.
         """
         online_ids = set(self.get_online_device_ids())
-        readings: dict[str, float] = {}
+        readings_out: dict[str, float] = {}
 
-        key = SENSOR_TO_KEY.get(sensor_id, sensor_id)
         for device_id, latest in self._ws.get_all_latest_by_device().items():
             if device_id not in online_ids:
                 continue
-            value = latest.get(key)
+            readings = latest.get("readings", {})
+            value = readings.get(sensor_id)
             if isinstance(value, (int, float)):
-                readings[device_id] = float(value)
+                readings_out[device_id] = float(value)
 
-        return readings
+        return readings_out
 
     def device_has_actuator(self, device_id: str, actuator_id: str) -> bool:
         """Check if a device has a specific actuator."""

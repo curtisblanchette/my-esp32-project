@@ -12,20 +12,20 @@ from src.api.cortex import create_cortex_router
 from src.services.cortex_memory import CortexMemory
 from src.services.outcome_tracker import OutcomeTracker
 from src.services.rule_advisor import RuleAdvisor
-from src.services.decision_engine import DecisionEngine, Rule, RuleCondition, RuleAction
+from src.services.decision_engine import DecisionEngine
 
 
-def _make_engine():
-    engine = DecisionEngine()
-    engine.rules = [
-        Rule(
-            name="high_temp_alert",
-            description="Turn on fan when temp > 25",
-            condition=RuleCondition(sensor="temp1", operator=">", threshold=25, duration_seconds=15),
-            action=RuleAction(target="relay1", action="set", value=True, reason="Temperature exceeded 25°C"),
-        ),
-    ]
-    return engine
+def _seed_rules_to_db(sqlite_db):
+    """Seed a rule into the DB and return the engine loaded from it."""
+    sqlite_db.insert_rule(
+        name="high_temp_alert",
+        description="Turn on fan when temp > 25",
+        condition={"sensor": "temp1", "operator": ">", "threshold": 25, "duration_seconds": 15},
+        action={"target": "relay1", "action": "set", "value": True, "reason": "Temperature exceeded 25°C"},
+        enabled=True,
+        source="yaml",
+    )
+    return DecisionEngine.from_sqlite(sqlite_db)
 
 
 def _seed_outcomes(sqlite_db, count=5):
@@ -74,7 +74,7 @@ def _seed_device(sqlite_db, device_id="esp32-test"):
 @pytest.fixture
 def cortex_client(sqlite_db):
     """Create a TestClient with the cortex router mounted."""
-    engine = _make_engine()
+    engine = _seed_rules_to_db(sqlite_db)
     memory = CortexMemory(sqlite_db)
     _seed_outcomes(sqlite_db)
     _seed_device(sqlite_db)
@@ -184,8 +184,12 @@ class TestCortexRoutes:
         assert r.status_code == 200
         assert r.json()["ok"] is True
 
-        # Rule should be modified
+        # Rule should be modified in-memory
         assert engine.rules[0].condition.threshold == 27
+
+        # DB should also be updated since rule has an id
+        db_rule = sqlite_db.get_rule_by_name("high_temp_alert")
+        assert db_rule["condition"]["threshold"] == 27
 
         # Status should be applied
         stored = sqlite_db.get_suggestion("approve-1")
@@ -231,8 +235,8 @@ class TestCortexRoutes:
     # ── Rules Endpoints ────────────────────────────────────────────────
 
     def test_get_rules(self, cortex_client):
-        """GET /rules returns all in-memory rules."""
-        client, _, _, engine = cortex_client
+        """GET /rules returns all rules from DB."""
+        client, sqlite_db, _, engine = cortex_client
         r = client.get("/api/cortex/rules")
         assert r.status_code == 200
         data = r.json()
@@ -243,6 +247,7 @@ class TestCortexRoutes:
         assert rule["name"] == "high_temp_alert"
         assert rule["enabled"] is True
         assert rule["modified"] is False
+        assert "id" in rule
         assert rule["condition"]["sensor"] == "temp1"
         assert rule["condition"]["operator"] == ">"
         assert rule["condition"]["threshold"] == 25
@@ -250,37 +255,165 @@ class TestCortexRoutes:
         assert rule["action"]["value"] is True
 
     def test_get_rules_includes_modified_flag(self, cortex_client):
-        """Modified rules are flagged in the response."""
-        client, _, _, engine = cortex_client
-        engine.modified_rules.add("high_temp_alert")
+        """Modified rules (updated_at > created_at) are flagged in the response."""
+        client, sqlite_db, _, engine = cortex_client
+        # Updating the rule in DB will set updated_at > created_at
+        rule_id = engine.rules[0].id
+        import time
+        time.sleep(0.01)  # Ensure timestamp difference
+        sqlite_db.update_rule(rule_id, description="Updated description")
 
         r = client.get("/api/cortex/rules")
         data = r.json()
         assert data["rules"][0]["modified"] is True
 
     def test_toggle_rule_disable(self, cortex_client):
-        """PATCH disables a rule."""
-        client, _, _, engine = cortex_client
-        assert engine.rules[0].enabled is True
+        """PATCH disables a rule by id and persists to DB."""
+        client, sqlite_db, _, engine = cortex_client
+        rule_id = engine.rules[0].id
 
-        r = client.patch("/api/cortex/rules/high_temp_alert", json={"enabled": False})
+        r = client.patch(f"/api/cortex/rules/{rule_id}", json={"enabled": False})
         assert r.status_code == 200
         assert r.json()["ok"] is True
+
+        # In-memory engine reloaded
         assert engine.rules[0].enabled is False
+        # DB persisted
+        db_rule = sqlite_db.get_rule(rule_id)
+        assert db_rule["enabled"] is False
 
     def test_toggle_rule_enable(self, cortex_client):
         """PATCH re-enables a disabled rule."""
-        client, _, _, engine = cortex_client
-        engine.rules[0].enabled = False
+        client, sqlite_db, _, engine = cortex_client
+        rule_id = engine.rules[0].id
+        sqlite_db.update_rule_enabled(rule_id, False)
+        engine.reload_from_sqlite(sqlite_db)
 
-        r = client.patch("/api/cortex/rules/high_temp_alert", json={"enabled": True})
+        r = client.patch(f"/api/cortex/rules/{rule_id}", json={"enabled": True})
         assert r.status_code == 200
         assert r.json()["ok"] is True
         assert engine.rules[0].enabled is True
 
     def test_toggle_nonexistent_rule(self, cortex_client):
-        """PATCH on unknown rule name returns 404."""
+        """PATCH on unknown rule id returns 404."""
         client, _, _, _ = cortex_client
-        r = client.patch("/api/cortex/rules/nonexistent_rule", json={"enabled": False})
+        r = client.patch("/api/cortex/rules/nonexistent-id", json={"enabled": False})
         assert r.status_code == 404
         assert r.json()["ok"] is False
+
+    # ── CRUD Endpoints ────────────────────────────────────────────────
+
+    def test_create_rule(self, cortex_client):
+        """POST creates a new rule."""
+        client, sqlite_db, _, engine = cortex_client
+
+        r = client.post("/api/cortex/rules", json={
+            "name": "test_new_rule",
+            "description": "A test rule",
+            "condition": {"sensor": "temp1", "operator": "<", "threshold": 18},
+            "action": {"target": "relay1", "action": "set", "value": False, "reason": "Too cold"},
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["rule"]["name"] == "test_new_rule"
+        assert data["rule"]["id"]
+        assert data["rule"]["source"] == "user"
+
+        # Engine reloaded with new rule
+        assert len(engine.rules) == 2
+        assert any(r.name == "test_new_rule" for r in engine.rules)
+
+    def test_create_rule_duplicate_name(self, cortex_client):
+        """POST with duplicate name returns 409."""
+        client, _, _, _ = cortex_client
+        r = client.post("/api/cortex/rules", json={
+            "name": "high_temp_alert",
+            "description": "Duplicate",
+            "condition": {"sensor": "temp1", "operator": ">", "threshold": 30},
+            "action": {"target": "relay1", "action": "set", "value": True, "reason": "Dup"},
+        })
+        assert r.status_code == 409
+        assert "already exists" in r.json()["error"]
+
+    def test_create_rule_invalid(self, cortex_client):
+        """POST with missing fields returns 400."""
+        client, _, _, _ = cortex_client
+        r = client.post("/api/cortex/rules", json={
+            "name": "bad_rule",
+            "description": "Missing fields",
+            "condition": {"sensor": "", "operator": "invalid", "threshold": 0},
+            "action": {"target": "", "action": "", "value": True, "reason": ""},
+        })
+        assert r.status_code == 400
+
+    def test_update_rule(self, cortex_client):
+        """PUT updates a rule by id."""
+        client, sqlite_db, _, engine = cortex_client
+        rule_id = engine.rules[0].id
+
+        r = client.put(f"/api/cortex/rules/{rule_id}", json={
+            "name": "renamed_rule",
+            "description": "Updated description",
+            "condition": {"sensor": "temp1", "operator": ">", "threshold": 30, "duration_seconds": 20},
+            "action": {"target": "relay1", "action": "set", "value": True, "reason": "Updated reason"},
+        })
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["rule"]["name"] == "renamed_rule"
+        assert data["rule"]["condition"]["threshold"] == 30
+
+        # Engine reloaded
+        assert engine.rules[0].name == "renamed_rule"
+        assert engine.rules[0].condition.threshold == 30
+
+    def test_update_rule_not_found(self, cortex_client):
+        """PUT on nonexistent id returns 404."""
+        client, _, _, _ = cortex_client
+        r = client.put("/api/cortex/rules/nonexistent-id", json={
+            "name": "nope",
+            "description": "Nope",
+            "condition": {"sensor": "temp1", "operator": ">", "threshold": 30},
+            "action": {"target": "relay1", "action": "set", "value": True, "reason": "Nope"},
+        })
+        assert r.status_code == 404
+
+    def test_delete_rule(self, cortex_client):
+        """DELETE removes a rule by id."""
+        client, sqlite_db, _, engine = cortex_client
+        rule_id = engine.rules[0].id
+
+        r = client.delete(f"/api/cortex/rules/{rule_id}")
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+
+        # Rule gone from DB
+        assert sqlite_db.get_rule(rule_id) is None
+        # Engine reloaded
+        assert len(engine.rules) == 0
+
+    def test_delete_rule_cascades_suggestions(self, cortex_client):
+        """DELETE cascades to suggestions by rule name."""
+        client, sqlite_db, _, engine = cortex_client
+        rule_id = engine.rules[0].id
+
+        # Add a suggestion for this rule
+        sqlite_db.insert_suggestion(
+            id="cascade-1", rule_name="high_temp_alert", field="threshold",
+            current_value="25", suggested_value="27",
+            reason="Test cascade", confidence=0.7,
+        )
+        assert sqlite_db.get_suggestion("cascade-1") is not None
+
+        r = client.delete(f"/api/cortex/rules/{rule_id}")
+        assert r.status_code == 200
+
+        # Suggestion cascade-deleted
+        assert sqlite_db.get_suggestion("cascade-1") is None
+
+    def test_delete_rule_not_found(self, cortex_client):
+        """DELETE on nonexistent id returns 404."""
+        client, _, _, _ = cortex_client
+        r = client.delete("/api/cortex/rules/nonexistent-id")
+        assert r.status_code == 404

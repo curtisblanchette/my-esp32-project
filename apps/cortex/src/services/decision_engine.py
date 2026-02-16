@@ -56,6 +56,7 @@ class Rule:
     condition: RuleCondition
     action: RuleAction
     enabled: bool = True
+    id: str = ""
 
 
 @dataclass
@@ -67,13 +68,50 @@ class SensorState:
     cooldown_seconds: float = 60  # Prevent rapid toggling
 
 
+def _rule_from_dict(data: dict, rule_id: str = "") -> Rule:
+    """Create a Rule from a dict (YAML-style or DB row shape)."""
+    condition_data = data.get("condition", {})
+    action_data = data.get("action", {})
+    return Rule(
+        name=data.get("name", ""),
+        description=data.get("description", ""),
+        condition=RuleCondition(
+            sensor=condition_data.get("sensor", ""),
+            operator=condition_data.get("operator", ">="),
+            threshold=condition_data.get("threshold", 0),
+            duration_seconds=condition_data.get("duration_seconds", 0),
+            trend=condition_data.get("trend"),
+            trend_window_minutes=condition_data.get("trend_window_minutes", 30),
+            time_of_day=condition_data.get("time_of_day"),
+            forecast=condition_data.get("forecast"),
+            forecast_threshold=condition_data.get("forecast_threshold"),
+            forecast_within_minutes=condition_data.get("forecast_within_minutes", 15.0),
+            baseline_deviation=condition_data.get("baseline_deviation"),
+            scope=condition_data.get("scope", "self"),
+        ),
+        action=RuleAction(
+            target=action_data.get("target", ""),
+            action=action_data.get("action", "set"),
+            value=action_data.get("value"),
+            reason=action_data.get("reason", ""),
+            target_scope=action_data.get("target_scope", "self"),
+        ),
+        enabled=data.get("enabled", True),
+        id=rule_id,
+    )
+
+
+def _rules_from_dicts(rules_data: list[dict]) -> list[Rule]:
+    """Create a list of Rules from a list of dicts."""
+    return [_rule_from_dict(d) for d in rules_data]
+
+
 @dataclass
 class DecisionEngine:
     """Rule-based decision engine for sensor data."""
     rules: list[Rule] = field(default_factory=list)
     sensor_states: dict[str, SensorState] = field(default_factory=dict)
     llm_config: dict[str, Any] = field(default_factory=dict)
-    modified_rules: set[str] = field(default_factory=set)
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> "DecisionEngine":
@@ -81,43 +119,33 @@ class DecisionEngine:
         with open(path) as f:
             config = yaml.safe_load(f)
 
-        rules = []
-        for rule_data in config.get("rules", []):
-            condition_data = rule_data.get("condition", {})
-            action_data = rule_data.get("action", {})
-
-            rule = Rule(
-                name=rule_data.get("name", ""),
-                description=rule_data.get("description", ""),
-                condition=RuleCondition(
-                    sensor=condition_data.get("sensor", ""),
-                    operator=condition_data.get("operator", ">="),
-                    threshold=condition_data.get("threshold", 0),
-                    duration_seconds=condition_data.get("duration_seconds", 0),
-                    trend=condition_data.get("trend"),
-                    trend_window_minutes=condition_data.get("trend_window_minutes", 30),
-                    time_of_day=condition_data.get("time_of_day"),
-                    forecast=condition_data.get("forecast"),
-                    forecast_threshold=condition_data.get("forecast_threshold"),
-                    forecast_within_minutes=condition_data.get("forecast_within_minutes", 15.0),
-                    baseline_deviation=condition_data.get("baseline_deviation"),
-                    scope=condition_data.get("scope", "self"),
-                ),
-                action=RuleAction(
-                    target=action_data.get("target", ""),
-                    action=action_data.get("action", "set"),
-                    value=action_data.get("value"),
-                    reason=action_data.get("reason", ""),
-                    target_scope=action_data.get("target_scope", "self"),
-                ),
-                enabled=rule_data.get("enabled", True),
-            )
-            rules.append(rule)
+        rules = _rules_from_dicts(config.get("rules", []))
+        for rule in rules:
             logger.info(f"Loaded rule: {rule.name}")
 
         llm_config = config.get("llm", {})
 
         return cls(rules=rules, llm_config=llm_config)
+
+    @classmethod
+    def from_sqlite(cls, sqlite_client: Any) -> "DecisionEngine":
+        """Load rules from SQLite database."""
+        rows = sqlite_client.get_all_rules()
+        rules = []
+        for row in rows:
+            rule = _rule_from_dict(row, rule_id=row["id"])
+            rules.append(rule)
+            logger.info(f"Loaded rule from DB: {rule.name} (id={rule.id})")
+        return cls(rules=rules)
+
+    def reload_from_sqlite(self, sqlite_client: Any) -> None:
+        """Reload rules from SQLite, preserving sensor_states and llm_config."""
+        rows = sqlite_client.get_all_rules()
+        self.rules = []
+        for row in rows:
+            rule = _rule_from_dict(row, rule_id=row["id"])
+            self.rules.append(rule)
+        logger.info(f"Reloaded {len(self.rules)} rules from DB")
 
     def evaluate(
         self,

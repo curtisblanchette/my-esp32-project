@@ -26,7 +26,7 @@ export function NerveCenterSuggestions({ suggestions, onResolveAdjustment, onRun
   const [advisorRunning, setAdvisorRunning] = useState(false);
 
   const filtered = suggestions.filter((s) => {
-    if (filter === "all") return true;
+    if (filter === "all") return s.status !== "rejected";
     return s.status === filter;
   });
 
@@ -38,7 +38,7 @@ export function NerveCenterSuggestions({ suggestions, onResolveAdjustment, onRun
   });
 
   const counts = {
-    all: suggestions.length,
+    all: suggestions.filter((s) => s.status !== "rejected").length,
     pending: suggestions.filter((s) => s.status === "pending").length,
     applied: suggestions.filter((s) => s.status === "applied").length,
     rejected: suggestions.filter((s) => s.status === "rejected").length,

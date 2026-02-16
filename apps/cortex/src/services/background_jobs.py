@@ -7,6 +7,7 @@ Ported from apps/api/src/services/aggregationJob.ts and commandExpirationJob.ts.
 import asyncio
 import logging
 import math
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,6 +23,7 @@ ADVISOR_INITIAL_DELAY_S = 60      # 1 minute after startup
 AGGREGATION_INTERVAL_S = 10 * 60  # 10 minutes
 BUCKET_SIZE_MS = 5 * 60 * 1000    # 5 minutes
 EXPIRATION_CHECK_INTERVAL_S = 5   # 5 seconds
+SUGGESTION_CLEANUP_INTERVAL_S = 60 * 60  # 1 hour
 
 
 async def start_aggregation_job(
@@ -51,44 +53,41 @@ async def _aggregate_and_flush(redis: "RedisClient", sqlite: "SqliteClient") -> 
 
         logger.info(f"Aggregating {len(readings)} readings from Redis")
 
-        # Group into time buckets, keyed by (bucket_ts, device_id)
-        buckets: dict[tuple[int, str], dict] = {}
+        # Group into time buckets, keyed by (bucket_ts, device_id, sensor_id)
+        buckets: dict[tuple[int, str, str], dict] = {}
 
         for reading in readings:
             bucket_ts = (reading.ts // BUCKET_SIZE_MS) * BUCKET_SIZE_MS
-            key = (bucket_ts, reading.device_id)
+            for sensor_id, value in reading.readings.items():
+                key = (bucket_ts, reading.device_id, sensor_id)
+                if key in buckets:
+                    buckets[key]["sum"] += value
+                    buckets[key]["count"] += 1
+                else:
+                    buckets[key] = {
+                        "ts": bucket_ts,
+                        "device_id": reading.device_id,
+                        "sensor_id": sensor_id,
+                        "sum": value,
+                        "count": 1,
+                        "source_topic": reading.source_topic,
+                    }
 
-            if key in buckets:
-                buckets[key]["temp_sum"] += reading.temp
-                buckets[key]["humidity_sum"] += reading.humidity
-                buckets[key]["count"] += 1
-            else:
-                buckets[key] = {
-                    "ts": bucket_ts,
-                    "temp_sum": reading.temp,
-                    "humidity_sum": reading.humidity,
-                    "count": 1,
-                    "source_topic": reading.source_topic,
-                    "device_id": reading.device_id,
-                }
+        from .sqlite_client import SensorValue
 
-        from .sqlite_client import TelemetryRow
-
-        inserted = 0
+        sensor_values = []
         for bucket in buckets.values():
-            avg_temp = round(bucket["temp_sum"] / bucket["count"], 2)
-            avg_humidity = round(bucket["humidity_sum"] / bucket["count"], 2)
-
-            sqlite.insert_reading(TelemetryRow(
+            avg_val = round(bucket["sum"] / bucket["count"], 2)
+            sensor_values.append(SensorValue(
                 ts=bucket["ts"],
-                temp=avg_temp,
-                humidity=avg_humidity,
-                source_topic=bucket["source_topic"],
                 device_id=bucket["device_id"],
+                sensor_id=bucket["sensor_id"],
+                value=avg_val,
+                source_topic=bucket["source_topic"],
             ))
-            inserted += 1
 
-        logger.info(f"Flushed {inserted} aggregated buckets to SQLite (from {len(readings)} readings)")
+        sqlite.insert_sensor_values(sensor_values)
+        logger.info(f"Flushed {len(sensor_values)} aggregated sensor values to SQLite (from {len(readings)} readings)")
 
         # Delete from Redis
         keys_to_delete = [
@@ -161,3 +160,23 @@ async def start_rule_advisor_job(
             logger.error(f"Rule advisor job failed: {e}")
 
         await asyncio.sleep(ADVISOR_INTERVAL_S)
+
+
+async def start_suggestion_cleanup_job(
+    sqlite: "SqliteClient",
+    ttl_s: int,
+) -> None:
+    """Periodically purge rejected suggestions that have exceeded their TTL."""
+    logger.info(f"Starting suggestion cleanup job (interval: {SUGGESTION_CLEANUP_INTERVAL_S}s, ttl: {ttl_s}s)")
+    await asyncio.sleep(30)
+
+    while True:
+        try:
+            cutoff_ms = int(time.time() * 1000) - (ttl_s * 1000)
+            purged = sqlite.purge_rejected_suggestions(cutoff_ms)
+            if purged:
+                logger.info(f"Purged {purged} rejected suggestion(s) older than {ttl_s}s")
+        except Exception as e:
+            logger.error(f"Suggestion cleanup job failed: {e}")
+
+        await asyncio.sleep(SUGGESTION_CLEANUP_INTERVAL_S)

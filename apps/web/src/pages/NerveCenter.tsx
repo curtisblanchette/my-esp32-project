@@ -112,7 +112,7 @@ export function NerveCenter({
               />
             )}
             {activeTab === "rules" && (
-              <NerveCenterRules rules={rules} setRules={setRules} addError={addError} />
+              <NerveCenterRules rules={rules} setRules={setRules} addError={addError} devices={devices} />
             )}
             {activeTab === "suggestions" && (
               <NerveCenterSuggestions

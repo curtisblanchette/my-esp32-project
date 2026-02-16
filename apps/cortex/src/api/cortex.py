@@ -1,14 +1,16 @@
 """
-Cortex intelligence API — system status, baselines, rule suggestions, rules.
+Cortex intelligence API — system status, baselines, rule suggestions, rules CRUD.
 
-Phase 4+6 endpoints for monitoring and managing the adaptive learning system.
+Phase 4+6+7 endpoints for monitoring and managing the adaptive learning system.
 """
 
-from dataclasses import asdict
+import logging
+import sqlite3
+
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..services.sqlite_client import SqliteClient
@@ -17,6 +19,12 @@ if TYPE_CHECKING:
     from ..services.rule_advisor import RuleAdvisor
     from ..services.websocket_server import WebSocketServer
     from ..services.decision_engine import DecisionEngine
+
+logger = logging.getLogger(__name__)
+
+VALID_OPERATORS = {">", "<", ">=", "<=", "==", "!="}
+VALID_TRENDS = {"rising", "falling", "stable"}
+VALID_FORECASTS = {"will_exceed", "will_drop_below"}
 
 
 class AdjustmentAction(BaseModel):
@@ -27,21 +35,41 @@ class RuleToggle(BaseModel):
     enabled: bool
 
 
-def _serialize_rules(engine: "DecisionEngine") -> list[dict]:
-    """Serialize in-memory rules to JSON-safe dicts."""
-    result = []
-    for rule in engine.rules:
-        condition = asdict(rule.condition)
-        action = asdict(rule.action)
-        result.append({
-            "name": rule.name,
-            "description": rule.description,
-            "enabled": rule.enabled,
-            "condition": condition,
-            "action": action,
-            "modified": rule.name in engine.modified_rules,
-        })
-    return result
+class RuleBody(BaseModel):
+    name: str
+    description: str
+    condition: dict[str, Any]
+    action: dict[str, Any]
+    enabled: bool = True
+
+
+def _validate_rule(condition: dict, action: dict) -> str | None:
+    """Validate rule condition/action fields. Returns error message or None."""
+    # Required condition fields
+    if not condition.get("sensor"):
+        return "condition.sensor is required"
+    if condition.get("operator") not in VALID_OPERATORS:
+        return f"condition.operator must be one of {VALID_OPERATORS}"
+    if "threshold" not in condition:
+        return "condition.threshold is required"
+
+    # Required action fields
+    if not action.get("target"):
+        return "action.target is required"
+    if not action.get("action"):
+        return "action.action is required"
+    if not action.get("reason"):
+        return "action.reason is required"
+
+    # Optional field validation
+    if condition.get("trend") and condition["trend"] not in VALID_TRENDS:
+        return f"condition.trend must be one of {VALID_TRENDS}"
+    if condition.get("forecast") and condition["forecast"] not in VALID_FORECASTS:
+        return f"condition.forecast must be one of {VALID_FORECASTS}"
+    if condition.get("forecast") and condition.get("forecast_threshold") is None:
+        return "condition.forecast_threshold is required when forecast is set"
+
+    return None
 
 
 def create_cortex_router(
@@ -53,6 +81,12 @@ def create_cortex_router(
     engine: "DecisionEngine | None" = None,
 ) -> APIRouter:
     r = APIRouter()
+
+    async def _broadcast_rules():
+        """Broadcast current rules from DB to all WebSocket clients."""
+        if ws_server:
+            all_rules = sqlite.get_all_rules()
+            await ws_server.broadcast_rules(all_rules)
 
     @r.get("/status")
     async def get_status():
@@ -146,35 +180,109 @@ def create_cortex_router(
             "count": len(suggestions) if suggestions else 0,
         }
 
-    # ── Rules Endpoints (Phase 6: Nerve Center) ───────────────────────
+    # ── Rules CRUD Endpoints ─────────────────────────────────────────
 
     @r.get("/rules")
     async def get_rules():
-        """List all in-memory rules with their current state."""
-        if not engine:
-            return {"ok": True, "rules": []}
-        return {"ok": True, "rules": _serialize_rules(engine)}
+        """List all rules from the database."""
+        return {"ok": True, "rules": sqlite.get_all_rules()}
 
-    @r.patch("/rules/{rule_name}")
-    async def toggle_rule(rule_name: str, body: RuleToggle):
-        """Toggle a rule's enabled state (in-memory only)."""
-        if not engine:
+    @r.post("/rules")
+    async def create_rule(body: RuleBody):
+        """Create a new rule."""
+        error = _validate_rule(body.condition, body.action)
+        if error:
+            return JSONResponse(status_code=400, content={"ok": False, "error": error})
+
+        try:
+            rule = sqlite.insert_rule(
+                name=body.name,
+                description=body.description,
+                condition=body.condition,
+                action=body.action,
+                enabled=body.enabled,
+                source="user",
+            )
+        except sqlite3.IntegrityError:
             return JSONResponse(
-                status_code=404,
-                content={"ok": False, "error": "Decision engine not available"},
+                status_code=409,
+                content={"ok": False, "error": f"Rule name '{body.name}' already exists"},
             )
 
-        for rule in engine.rules:
-            if rule.name == rule_name:
-                rule.enabled = body.enabled
-                # Broadcast updated rules
-                if ws_server:
-                    await ws_server.broadcast_rules(_serialize_rules(engine))
-                return {"ok": True}
+        # Reload engine from DB
+        if engine:
+            engine.reload_from_sqlite(sqlite)
 
-        return JSONResponse(
-            status_code=404,
-            content={"ok": False, "error": f"Rule '{rule_name}' not found"},
-        )
+        await _broadcast_rules()
+        return {"ok": True, "rule": rule}
+
+    @r.put("/rules/{rule_id}")
+    async def update_rule(rule_id: str, body: RuleBody):
+        """Update a rule by id."""
+        error = _validate_rule(body.condition, body.action)
+        if error:
+            return JSONResponse(status_code=400, content={"ok": False, "error": error})
+
+        try:
+            rule = sqlite.update_rule(
+                rule_id=rule_id,
+                name=body.name,
+                description=body.description,
+                condition=body.condition,
+                action=body.action,
+                enabled=body.enabled,
+            )
+        except sqlite3.IntegrityError:
+            return JSONResponse(
+                status_code=409,
+                content={"ok": False, "error": f"Rule name '{body.name}' already exists"},
+            )
+
+        if rule is None:
+            return JSONResponse(
+                status_code=404,
+                content={"ok": False, "error": f"Rule '{rule_id}' not found"},
+            )
+
+        # Reload engine from DB
+        if engine:
+            engine.reload_from_sqlite(sqlite)
+
+        await _broadcast_rules()
+        return {"ok": True, "rule": rule}
+
+    @r.delete("/rules/{rule_id}")
+    async def delete_rule(rule_id: str):
+        """Delete a rule by id. Cascade deletes associated suggestions."""
+        deleted = sqlite.delete_rule(rule_id)
+        if not deleted:
+            return JSONResponse(
+                status_code=404,
+                content={"ok": False, "error": f"Rule '{rule_id}' not found"},
+            )
+
+        # Reload engine from DB
+        if engine:
+            engine.reload_from_sqlite(sqlite)
+
+        await _broadcast_rules()
+        return {"ok": True}
+
+    @r.patch("/rules/{rule_id}")
+    async def toggle_rule(rule_id: str, body: RuleToggle):
+        """Toggle a rule's enabled state (persists to DB)."""
+        updated = sqlite.update_rule_enabled(rule_id, body.enabled)
+        if not updated:
+            return JSONResponse(
+                status_code=404,
+                content={"ok": False, "error": f"Rule '{rule_id}' not found"},
+            )
+
+        # Update in-memory engine
+        if engine:
+            engine.reload_from_sqlite(sqlite)
+
+        await _broadcast_rules()
+        return {"ok": True}
 
     return r

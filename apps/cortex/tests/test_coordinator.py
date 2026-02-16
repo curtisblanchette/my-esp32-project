@@ -76,7 +76,7 @@ class TestCoordinator:
         assert set(ids) == {"a", "c"}
 
     def test_get_latest_reading_exists(self):
-        ws = _MockWsServer({"dev1": {"temp": 25.5, "humidity": 60.0}})
+        ws = _MockWsServer({"dev1": {"readings": {"temp1": 25.5, "hum1": 60.0}}})
         coord = Coordinator(ws, _MockSqlite())
         assert coord.get_latest_reading("dev1", "temp1") == 25.5
         assert coord.get_latest_reading("dev1", "hum1") == 60.0
@@ -86,15 +86,15 @@ class TestCoordinator:
         assert coord.get_latest_reading("unknown", "temp1") is None
 
     def test_get_latest_reading_missing_sensor(self):
-        ws = _MockWsServer({"dev1": {"temp": 25.5}})
+        ws = _MockWsServer({"dev1": {"readings": {"temp1": 25.5}}})
         coord = Coordinator(ws, _MockSqlite())
         assert coord.get_latest_reading("dev1", "hum1") is None
 
     def test_get_all_latest_readings(self):
         ws = _MockWsServer({
-            "a": {"temp": 22.0},
-            "b": {"temp": 28.0},
-            "c": {"temp": 19.0},  # offline
+            "a": {"readings": {"temp1": 22.0}},
+            "b": {"readings": {"temp1": 28.0}},
+            "c": {"readings": {"temp1": 19.0}},  # offline
         })
         sqlite = _MockSqlite([
             _MockDevice(id="a", location="r1", online=True),
@@ -107,7 +107,7 @@ class TestCoordinator:
         # "c" excluded because offline
 
     def test_get_all_latest_readings_filters_offline(self):
-        ws = _MockWsServer({"a": {"temp": 22.0}, "b": {"temp": 28.0}})
+        ws = _MockWsServer({"a": {"readings": {"temp1": 22.0}}, "b": {"readings": {"temp1": 28.0}}})
         sqlite = _MockSqlite([
             _MockDevice(id="a", location="r1", online=False),
             _MockDevice(id="b", location="r2", online=False),

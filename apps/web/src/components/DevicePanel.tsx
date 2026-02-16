@@ -8,23 +8,10 @@ import {
   type LatestReading,
   type RelayStatus,
   type Command,
-  hasTempHumiditySensors,
+  hasSensors,
   hasActuators,
 } from "../api";
-import { fmtTime } from "../lib/format";
 import { useRelays } from '../hooks/useRelays';
-
-function clamp(n: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, n));
-}
-
-function tempToMix(tC: number): number {
-  const minC = 8;
-  const maxC = 30;
-  const x = clamp((tC - minC) / (maxC - minC), 0, 1);
-  const eased = Math.pow(x, 0.65);
-  return clamp(0.12 + eased * 0.88, 0, 1);
-}
 
 interface DevicePanelProps {
   device: Device;
@@ -70,22 +57,6 @@ export function DevicePanel(props: DevicePanelProps): React.ReactElement {
     };
   }, [commands, device.id]);
 
-  // Derive display values from latest reading
-  const derived = useMemo(() => {
-    if (!latestReading) return null;
-    const t = Number(latestReading.temp);
-    const h = clamp(Number(latestReading.humidity), 0, 100);
-    const mix = tempToMix(t);
-
-    const tempSub = t >= 25 ? "Warm" : t <= 18 ? "Cool" : "Comfortable";
-    const humiditySub = h >= 70 ? "Humid" : h <= 35 ? "Dry" : "Comfortable";
-    const tempNote = t >= 25 ? "Warm" : t <= 18 ? "Cool" : "Comfortable";
-    const humidityNote =
-      h >= 70 ? "Air feels heavy" : h <= 35 ? "Consider a humidifier" : "Nice range";
-
-    return { t, h, mix, tempSub, humiditySub, tempNote, humidityNote };
-  }, [latestReading]);
-
   useEffect(() => {
     if(wsRelayUpdates) {
       const mine = wsRelayUpdates.filter(r => r.deviceId === device.id);
@@ -95,7 +66,7 @@ export function DevicePanel(props: DevicePanelProps): React.ReactElement {
     }
   }, [wsRelayUpdates, device.id, applyRelays]);
   const hasOfflineDevice = !device.online;
-  const showSensors = hasTempHumiditySensors(device);
+  const showSensors = hasSensors(device);
   const showRelays = hasActuators(device);
 
   return (
@@ -155,20 +126,13 @@ export function DevicePanel(props: DevicePanelProps): React.ReactElement {
         </div>
       </div>
 
-      {/* Sensor gauges and charts (only if device has temp/humidity sensors) */}
+      {/* Sensor gauges and charts (any sensor types) */}
       {showSensors && (
         <div className="mt-3">
           <h2 className="text-sm font-medium opacity-80 mb-2">Sensors</h2>
           <SensorCard
-            temp={derived?.t ?? null}
-            humidity={derived?.h ?? null}
-            tempNote={derived ? derived.tempNote : "Waiting..."}
-            tempSubtitle={derived ? derived.tempSub : "--"}
-            humidityNote={derived ? derived.humidityNote : "Waiting..."}
-            humiditySubtitle={derived ? derived.humiditySub : "--"}
-            mix={derived?.mix}
+            device={device}
             latestReading={latestReading}
-            deviceId={device.id}
           />
         </div>
       )}

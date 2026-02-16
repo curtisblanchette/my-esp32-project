@@ -23,6 +23,33 @@ function stripDetail(text: string): string {
   return text.replace(/<detail>[\s\S]*?<\/detail>/g, "").trim();
 }
 
+function newSessionId(): string {
+  const c = (globalThis as any).crypto as Crypto | undefined;
+
+  // Prefer native UUID
+  if (c && typeof (c as any).randomUUID === "function") {
+    return (c as any).randomUUID();
+  }
+
+  // Fallback: RFC4122-ish v4 UUID using getRandomValues
+  if (c && typeof c.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    c.getRandomValues(bytes);
+
+    // RFC 4122 section 4.4
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"));
+    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex
+      .slice(6, 8)
+      .join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+  }
+
+  // Last resort
+  return String(Date.now());
+}
+
 export function ChatInput({ noBorder }: { noBorder?: boolean } = {}): React.ReactElement {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -40,6 +67,7 @@ export function ChatInput({ noBorder }: { noBorder?: boolean } = {}): React.Reac
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const sessionIdRef = useRef<string>(newSessionId());
 
   // Auto-scroll to bottom when messages change or during streaming
   useEffect(() => {
@@ -234,7 +262,7 @@ export function ChatInput({ noBorder }: { noBorder?: boolean } = {}): React.Reac
       try {
         let finalEvent: StreamChatEvent | null = null;
 
-        for await (const event of sendChatStream(trimmed, abortControllerRef.current.signal)) {
+        for await (const event of sendChatStream(trimmed, abortControllerRef.current.signal, sessionIdRef.current)) {
           if (event.type === "token") {
             streamingContentRef.current += event.token;
             setStreamingContent((prev) => prev + event.token);
@@ -297,6 +325,15 @@ export function ChatInput({ noBorder }: { noBorder?: boolean } = {}): React.Reac
     [input, isLoading, autoPlayAudio, voiceHealth?.tts_available, speakResponse]
   );
 
+  const sendMessage = useCallback((text: string) => {
+    setInput(text);
+    // Defer submit to next tick so input state is set
+    setTimeout(() => {
+      const form = document.querySelector<HTMLFormElement>(".chat-form");
+      if (form) form.requestSubmit();
+    }, 0);
+  }, []);
+
   const formatAction = (action: ChatResponse["action"]): string | null => {
     if (!action) return null;
     if (action.type === "command" && action.target) {
@@ -305,6 +342,12 @@ export function ChatInput({ noBorder }: { noBorder?: boolean } = {}): React.Reac
     }
     if (action.type === "query" && action.sensor) {
       return `${action.sensor}: ${action.value ?? "N/A"}`;
+    }
+    if (action.type === "proposed_rules" && action.rules) {
+      return `${action.rules.length} rules proposed`;
+    }
+    if (action.type === "rules_activated") {
+      return `✓ ${action.count} rules activated`;
     }
     return null;
   };
@@ -434,11 +477,27 @@ export function ChatInput({ noBorder }: { noBorder?: boolean } = {}): React.Reac
                 }`}
               >
                 {msg.role === "assistant" ? formatMessage(msg.content) : msg.content}
-                {msg.action && (
+                {msg.action && msg.action.type !== "proposed_rules" && (
                   <span className="block text-xs opacity-70 mt-1">
                     {msg.action.type === "command" && "✓ "}
                     {formatAction(msg.action)}
                   </span>
+                )}
+                {msg.action?.type === "proposed_rules" && (
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      onClick={() => sendMessage("approve")}
+                      className="px-3 py-1 bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 rounded text-xs font-medium transition-colors"
+                    >
+                      Approve All
+                    </button>
+                    <button
+                      onClick={() => sendMessage("reject these rules")}
+                      className="px-3 py-1 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded text-xs font-medium transition-colors"
+                    >
+                      Reject
+                    </button>
+                  </div>
                 )}
                 {/* Play audio button for assistant messages */}
                 {msg.role === "assistant" && msg.audioUrl && (
@@ -472,7 +531,7 @@ export function ChatInput({ noBorder }: { noBorder?: boolean } = {}): React.Reac
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="flex gap-2">
+      <form onSubmit={handleSubmit} className="chat-form flex gap-2">
         <input
           type="text"
           value={input}

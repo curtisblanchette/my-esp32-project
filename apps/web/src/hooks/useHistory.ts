@@ -110,8 +110,7 @@ export function useHistory(options: UseHistoryOptions = {}) {
     (reading: LatestReading) => {
       const newPoint: HistoryPoint = {
         ts: reading.updatedAt,
-        temp: reading.temp,
-        humidity: reading.humidity,
+        readings: { ...reading.readings },
         count: 1,
       };
 

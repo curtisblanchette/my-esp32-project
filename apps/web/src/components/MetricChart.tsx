@@ -19,8 +19,8 @@ export interface MetricChartProps {
   label: string;
   color: string;
   backgroundColor: string;
-  yMin: number;
-  yMax: number;
+  yMin?: number;
+  yMax?: number;
   yTickFormat: (value: number) => string;
   yAxisPosition?: "left" | "right";
 }

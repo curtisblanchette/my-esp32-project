@@ -8,6 +8,7 @@ import httpx
 from ..config import OLLAMA_URL, OLLAMA_MODEL
 from ..models.telemetry import TelemetryMessage
 from ..models.command import Command
+from .sensor_meta import sensor_unit, sensor_rate_unit, guess_sensor_type
 
 if TYPE_CHECKING:
     from .sqlite_client import SqliteClient
@@ -32,19 +33,16 @@ _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ollama-")
 SYSTEM_PROMPT = """You are an AI assistant controlling a smart home IoT system.
 You receive sensor data and must decide what actions to take.
 
-Available actuators:
-- relay1: A switch that can be set to true (ON) or false (OFF)
-
 Your response must be valid JSON in one of these formats:
 
 If action needed:
-{"action": "command", "target": "relay1", "value": true, "reason": "Brief explanation"}
+{"action": "command", "target": "<actuator_id>", "value": true, "reason": "Brief explanation"}
 
 If no action needed:
 {"action": "none", "reason": "Brief explanation"}
 
 Be conservative - only take action when clearly necessary.
-Consider comfort, energy efficiency, and avoiding rapid state changes.
+Consider the stated goals, energy efficiency, and avoiding rapid state changes.
 """
 
 
@@ -125,7 +123,7 @@ class OllamaClient:
                 direction = data.get("trend", "stable")
                 rate = data.get("rate", 0)
                 mean = data.get("mean", 0)
-                unit = "°C/min" if "temp" in sensor else "%/min"
+                unit = sensor_rate_unit(guess_sensor_type(sensor))
                 trend_str += f"\n  - {sensor}: {direction} ({rate:+.2f}{unit}), 30min avg: {mean:.1f}"
 
         # Format baseline data (Phase 1)
@@ -151,7 +149,7 @@ class OllamaClient:
                 avg_delta = data.get("avg_delta_5m", 0)
                 pct = int(data.get("success_rate", 0) * 100)
                 metric = data.get("metric", "temperature")
-                unit = "°C" if metric == "temperature" else "%"
+                unit = sensor_unit(metric)
                 effectiveness_str += (
                     f"\n  - {target}: avg {avg_delta:+.1f}{unit} at 5min "
                     f"({pct}% effective, {samples} samples)"
@@ -163,7 +161,9 @@ class OllamaClient:
         if forecasts:
             forecast_str = "\nSensor forecasts (linear projection from recent data):"
             for sensor, data in forecasts.items():
-                unit = "°C" if "temp" in sensor else "%"
+                stype = guess_sensor_type(sensor)
+                unit = sensor_unit(stype)
+                rate_u = sensor_rate_unit(stype)
                 current = data.get("current", 0)
                 predicted_10m = data.get("predicted_10m")
                 predicted_15m = data.get("predicted_15m")
@@ -173,7 +173,7 @@ class OllamaClient:
                         f"\n  - {sensor}: current={current:.1f}{unit}, "
                         f"10min={predicted_10m:.1f}{unit}, "
                         f"15min={predicted_15m:.1f}{unit} "
-                        f"(rate: {rate:+.2f}{unit}/min)"
+                        f"(rate: {rate:+.2f}{rate_u})"
                     )
 
         # Format sensor state context
@@ -200,10 +200,10 @@ class OllamaClient:
 {trend_str}{baseline_str}{effectiveness_str}{forecast_str}{f"\n\nSensor states:{context_str}" if context_str else ""}{commands_str}
 
 Based on these readings, should any action be taken? Consider:
-1. Is the temperature comfortable (18-26°C is typical comfort range)?
-2. Is humidity at a reasonable level (30-60% is typical)?
-3. Are there any concerning trends or deviations from baseline?
-4. Are forecasts predicting any threshold breaches in the next 10-15 minutes?
+1. Are any sensor values outside normal or desired ranges (use baselines and goals if available)?
+2. Are there any concerning trends or deviations from baseline?
+3. Are forecasts predicting any threshold breaches in the next 10-15 minutes?
+4. Would taking action improve conditions without causing rapid toggling?
 
 Respond with JSON only."""
 
@@ -304,12 +304,18 @@ Respond with JSON only."""
 
     # ── Chat Intent Interpretation ──────────────────────────────────
 
-    def interpret_message(self, message: str, sqlite: "SqliteClient", ws: "WebSocketServer") -> OllamaIntent:
+    def interpret_message(
+        self,
+        message: str,
+        sqlite: "SqliteClient",
+        ws: "WebSocketServer",
+        conversation_history: list[dict] | None = None,
+    ) -> OllamaIntent:
         """
         Interpret a chat message and return a structured intent.
         Ported from apps/api/src/services/ollama.ts interpretMessage().
         """
-        system_prompt = build_system_prompt(sqlite, ws)
+        system_prompt = build_system_prompt(sqlite, ws, conversation_history)
 
         try:
             response = self._client.post(
@@ -336,13 +342,17 @@ Respond with JSON only."""
             raise
 
     async def interpret_message_stream(
-        self, message: str, sqlite: "SqliteClient", ws: "WebSocketServer"
+        self,
+        message: str,
+        sqlite: "SqliteClient",
+        ws: "WebSocketServer",
+        conversation_history: list[dict] | None = None,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """
         Stream interpretation of a message — yields partial tokens then final intent.
         Ported from apps/api/src/services/ollama.ts interpretMessageStream().
         """
-        system_prompt = build_system_prompt(sqlite, ws)
+        system_prompt = build_system_prompt(sqlite, ws, conversation_history)
 
         async with httpx.AsyncClient(timeout=60.0) as client:
             async with client.stream(
@@ -382,7 +392,27 @@ Respond with JSON only."""
 
 # ── System Prompt Builder ────────────────────────────────────────────
 
-def build_system_prompt(sqlite: "SqliteClient", ws: "WebSocketServer") -> str:
+# Legacy reading-key → sensor-ID bridge (until telemetry pipeline goes generic).
+_LEGACY_KEY_MAP = {"temp": "temp1", "humidity": "hum1"}
+
+
+def _resolve_prompt_reading_unit(reading_key: str, sensor_map: dict) -> str:
+    """Resolve unit for a reading key when building prompts."""
+    if reading_key in sensor_map:
+        s = sensor_map[reading_key]
+        return sensor_unit(s.type, s.unit)
+    mapped = _LEGACY_KEY_MAP.get(reading_key)
+    if mapped and mapped in sensor_map:
+        s = sensor_map[mapped]
+        return sensor_unit(s.type, s.unit)
+    return sensor_unit(guess_sensor_type(reading_key))
+
+
+def build_system_prompt(
+    sqlite: "SqliteClient",
+    ws: "WebSocketServer",
+    conversation_history: list[dict] | None = None,
+) -> str:
     """
     Build dynamic system prompt with device context.
     Ported from apps/api/src/services/systemPrompt.ts.
@@ -405,7 +435,15 @@ def build_system_prompt(sqlite: "SqliteClient", ws: "WebSocketServer") -> str:
         status = "online" if d.online else "offline"
         reading = latest_by_device.get(d.id)
         if reading:
-            reading_str = f"Current readings: temperature={reading.get('temp', 0):.1f}°C, humidity={reading.get('humidity', 0):.1f}%"
+            sensor_map = {s.id: s for s in d.capabilities.sensors}
+            _skip = {"updatedAt", "sourceTopic", "deviceId", "sourceIp"}
+            parts = []
+            for key, value in reading.items():
+                if key in _skip or not isinstance(value, (int, float)):
+                    continue
+                unit = _resolve_prompt_reading_unit(key, sensor_map)
+                parts.append(f"{key}={value:.1f}{unit}")
+            reading_str = "Current readings: " + ", ".join(parts) if parts else "No sensor data available yet."
         else:
             reading_str = "No sensor data available yet."
 
@@ -416,10 +454,29 @@ def build_system_prompt(sqlite: "SqliteClient", ws: "WebSocketServer") -> str:
 
     device_list = "\n\n".join(device_sections) if device_sections else "No devices registered yet."
 
+    # Location goals
+    goals_section = ""
+    try:
+        goals = sqlite.get_all_location_goals()
+        if goals:
+            goals_lines = "\n".join(f'- {g["location"]}: "{g["goal"]}"' for g in goals)
+            goals_section = f"\nLocation goals (user-defined automation objectives):\n{goals_lines}\n"
+    except Exception:
+        pass  # Table may not exist yet during migration
+
+    # Conversation history
+    history_section = ""
+    if conversation_history:
+        history_lines = "\n".join(
+            f'{msg["role"].capitalize()}: "{msg["content"]}"'
+            for msg in conversation_history
+        )
+        history_section = f"\nRecent conversation:\n{history_lines}\n"
+
     return f"""You are a smart home assistant for an ESP32-based IoT system. Interpret user requests and respond with JSON only.
 
 {device_list}
-
+{goals_section}
 IMPORTANT: You must respond with valid JSON only. No additional text.
 IMPORTANT: Always include "deviceId" to specify which device to target. Use the device names and locations listed above to determine the correct device. If the user does not specify a device, infer it from context or ask for clarification.
 
@@ -438,6 +495,15 @@ For historical queries (what happened, show me events, recent commands, etc.), r
 For sensor data analysis (trends, anomalies, spikes, fluctuations, patterns), respond:
 {{"intent": "analyze", "deviceId": "<device_id>", "timeframe": "<1h|6h|12h|24h|7d|30d>", "metric": "<temperature|humidity|all>", "reply": "<friendly response acknowledging the analysis request>", "summary": "<1-3 sentence spoken summary>"}}
 
+For setting up automation rules for a location (user describes goals, use-case, growing conditions, environment purpose, etc.), respond:
+{{"intent": "generate_rules", "location": "<location>", "goal": "<user's goal description>", "reply": "<acknowledge and explain what you'll generate>"}}
+
+When the user approves proposed rules (says "looks good", "yes", "approve", "activate", etc.), respond:
+{{"intent": "approve_rules", "reply": "<confirmation message>"}}
+
+When the user wants to modify proposed rules before approving (change thresholds, add/remove rules, etc.), respond:
+{{"intent": "refine_rules", "refinement": "<specific change requested>", "reply": "<acknowledge the refinement>"}}
+
 For unclear or unrelated requests, respond:
 {{"intent": "none", "reply": "<helpful clarification>"}}
 
@@ -452,7 +518,17 @@ User: "what happened in the last hour?"
 {{"intent": "history", "deviceId": "esp32-1", "timeframe": "1h", "category": "all", "reply": "Here's what happened in the last hour.", "summary": "A quiet hour with no commands or notable events."}}
 
 User: "any temperature spikes?"
-{{"intent": "analyze", "deviceId": "esp32-1", "timeframe": "24h", "metric": "temperature", "reply": "Let me analyze the temperature data for anomalies.", "summary": "Temperature stayed stable around 22°C with no significant spikes detected."}}"""
+{{"intent": "analyze", "deviceId": "esp32-1", "timeframe": "24h", "metric": "temperature", "reply": "Let me analyze the temperature data for anomalies.", "summary": "Temperature stayed stable around 22°C with no significant spikes detected."}}
+
+User: "set up my grow tent for tomatoes in veg stage"
+{{"intent": "generate_rules", "location": "grow-tent", "goal": "tomatoes in veg stage — maintain optimal temperature and humidity", "reply": "I'll generate automation rules for your grow tent based on tomato veg stage requirements."}}
+
+User: "looks good, approve them"
+{{"intent": "approve_rules", "reply": "Great, activating all proposed rules now."}}
+
+User: "change the temperature threshold to 28"
+{{"intent": "refine_rules", "refinement": "change temperature threshold to 28", "reply": "I'll update the temperature threshold to 28°C."}}
+{history_section}"""
 
 
 def _parse_intent(raw: str) -> OllamaIntent:

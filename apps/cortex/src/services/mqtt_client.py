@@ -161,27 +161,25 @@ class MqttService:
         if not isinstance(inner, dict):
             return
 
-        readings = inner.get("readings", [])
-        if not isinstance(readings, list):
+        raw_readings = inner.get("readings", [])
+        if not isinstance(raw_readings, list):
             return
 
-        # Extract temp and humidity (same logic as Node.js)
-        temp = None
-        humidity = None
-        for reading in readings:
-            if reading.get("id") == "temp1":
-                temp = reading.get("value")
-            if reading.get("id") == "hum1":
-                humidity = reading.get("value")
+        # Build generic readings dict from ALL numeric readings
+        readings_dict: dict[str, float] = {}
+        for reading in raw_readings:
+            rid = reading.get("id")
+            val = reading.get("value")
+            if rid and isinstance(val, (int, float)):
+                readings_dict[rid] = float(val)
 
-        if temp is None or humidity is None:
-            logger.debug(f"Incomplete telemetry from {device_id}: {readings}")
+        if not readings_dict:
+            logger.debug(f"No numeric readings from {device_id}: {raw_readings}")
             return
 
         now = int(time.time() * 1000)
         latest_reading = {
-            "temp": temp,
-            "humidity": humidity,
+            "readings": readings_dict,
             "updatedAt": now,
             "sourceTopic": topic,
             "deviceId": device_id,
@@ -192,7 +190,7 @@ class MqttService:
             try:
                 from .redis_client import RedisReading
                 self._redis.store_reading(RedisReading(
-                    ts=now, temp=temp, humidity=humidity,
+                    ts=now, readings=readings_dict,
                     source_topic=topic, device_id=device_id,
                 ))
             except Exception as e:

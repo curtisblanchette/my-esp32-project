@@ -47,43 +47,41 @@ def create_telemetry_router(sqlite, redis_client, ws_server) -> APIRouter:
                 if bucketMs <= 0:
                     return {"ok": False, "error": "bucketMs must be a positive number"}
 
-                bucketed_sqlite = sqlite.query_history_bucketed(
+                bucketed_sqlite = sqlite.query_sensor_values_bucketed(
                     since_ms=sinceMs, until_ms=until, bucket_ms=bucketMs,
-                    limit=limit, device_id=deviceId,
+                    limit=limit * 10, device_id=deviceId,
                 )
 
-                # Merge SQLite buckets and Redis readings into unified buckets
-                buckets: dict[int, dict[str, float]] = {}
+                # Merge SQLite buckets and Redis readings into unified per-sensor buckets
+                # Key: (bucket_ts, sensor_id) → {sum, count}
+                from collections import defaultdict
+                buckets: dict[tuple[int, str], dict] = {}
 
                 for row in bucketed_sqlite:
-                    buckets[row.ts] = {
-                        "tempSum": row.temp * row.count,
-                        "humiditySum": row.humidity * row.count,
-                        "count": row.count,
-                    }
+                    key = (row["ts"], row["sensor_id"])
+                    buckets[key] = {"sum": row["value"] * row["count"], "count": row["count"]}
 
                 for reading in redis_readings:
                     bucket_ts = (reading.ts // bucketMs) * bucketMs
-                    if bucket_ts in buckets:
-                        buckets[bucket_ts]["tempSum"] += reading.temp
-                        buckets[bucket_ts]["humiditySum"] += reading.humidity
-                        buckets[bucket_ts]["count"] += 1
-                    else:
-                        buckets[bucket_ts] = {
-                            "tempSum": reading.temp,
-                            "humiditySum": reading.humidity,
-                            "count": 1,
-                        }
+                    for sensor_id, value in reading.readings.items():
+                        key = (bucket_ts, sensor_id)
+                        if key in buckets:
+                            buckets[key]["sum"] += value
+                            buckets[key]["count"] += 1
+                        else:
+                            buckets[key] = {"sum": value, "count": 1}
 
-                points = [
-                    {
-                        "ts": ts,
-                        "temp": b["tempSum"] / b["count"],
-                        "humidity": b["humiditySum"] / b["count"],
-                        "count": int(b["count"]),
-                    }
-                    for ts, b in sorted(buckets.items())
-                ]
+                # Group by bucket_ts into {ts, readings: {sensor_id: avg_value}, count}
+                ts_groups: dict[int, dict] = {}
+                for (ts, sensor_id), data in sorted(buckets.items()):
+                    if ts not in ts_groups:
+                        ts_groups[ts] = {"ts": ts, "readings": {}, "count": 0}
+                    avg = data["sum"] / data["count"]
+                    ts_groups[ts]["readings"][sensor_id] = round(avg, 2)
+                    ts_groups[ts]["count"] = max(ts_groups[ts]["count"], data["count"])
+
+                points = list(ts_groups.values())
+                points.sort(key=lambda p: p["ts"])
                 points = points[-limit:]
 
                 return {
@@ -92,26 +90,39 @@ def create_telemetry_router(sqlite, redis_client, ws_server) -> APIRouter:
                     "deviceId": deviceId,
                 }
 
-            # Raw mode
-            sqlite_readings = sqlite.query_history_raw(
-                since_ms=sinceMs, until_ms=until, limit=limit, device_id=deviceId,
+            # Raw mode — query from sensor_values table
+            from collections import defaultdict as _dd
+            sv_rows = sqlite.query_sensor_values(
+                since_ms=sinceMs, until_ms=until, limit=limit * 10, device_id=deviceId,
             )
 
+            # Group by (ts, device_id)
+            groups: dict[tuple[int, str], dict[str, float]] = {}
+            for sv in sv_rows:
+                key = (sv.ts, sv.device_id)
+                if key not in groups:
+                    groups[key] = {}
+                groups[key][sv.sensor_id] = sv.value
+
             all_readings = [
-                {"ts": r.ts, "temp": r.temp, "humidity": r.humidity,
-                 "sourceTopic": r.source_topic, "deviceId": r.device_id}
-                for r in sqlite_readings
-            ] + [
-                {"ts": r.ts, "temp": r.temp, "humidity": r.humidity,
-                 "sourceTopic": r.source_topic, "deviceId": r.device_id}
-                for r in redis_readings
+                {"ts": ts, "readings": readings, "deviceId": dev_id}
+                for (ts, dev_id), readings in groups.items()
             ]
+
+            # Add Redis readings
+            for r in redis_readings:
+                all_readings.append({
+                    "ts": r.ts,
+                    "readings": dict(r.readings),
+                    "deviceId": r.device_id,
+                })
+
             all_readings.sort(key=lambda x: x["ts"])
             all_readings = all_readings[-limit:]
 
             return {
                 "ok": True, "mode": "raw", "points": all_readings,
-                "sources": {"redis": len(redis_readings), "sqlite": len(sqlite_readings)},
+                "sources": {"redis": len(redis_readings), "sqlite": len(sv_rows)},
                 "deviceId": deviceId,
             }
 

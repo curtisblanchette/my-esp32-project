@@ -10,6 +10,7 @@ import logging
 import os
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -19,21 +20,12 @@ logger = logging.getLogger(__name__)
 # Types
 
 @dataclass
-class TelemetryRow:
+class SensorValue:
     ts: int
-    temp: float
-    humidity: float
+    device_id: str
+    sensor_id: str
+    value: float
     source_topic: str | None = None
-    device_id: str | None = None
-
-
-@dataclass
-class TelemetryBucketRow:
-    ts: int
-    temp: float
-    humidity: float
-    count: int
-    device_id: str | None = None
 
 
 @dataclass
@@ -76,6 +68,7 @@ class Sensor:
     id: str
     type: str
     name: str | None = None
+    unit: str | None = None
 
 
 @dataclass
@@ -110,7 +103,9 @@ class Device:
             "firmware": self.firmware,
             "capabilities": {
                 "sensors": [
-                    {"id": s.id, "type": s.type, **({"name": s.name} if s.name else {})}
+                    {"id": s.id, "type": s.type,
+                     **({"name": s.name} if s.name else {}),
+                     **({"unit": s.unit} if s.unit else {})}
                     for s in self.capabilities.sensors
                 ],
                 "actuators": [
@@ -242,6 +237,39 @@ class SqliteClient:
             );
             CREATE INDEX IF NOT EXISTS idx_devices_location ON devices(location);
             CREATE INDEX IF NOT EXISTS idx_devices_online ON devices(online);
+
+            CREATE TABLE IF NOT EXISTS cortex_rules (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL,
+                condition JSON NOT NULL,
+                action JSON NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT 'yaml',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_rules_name ON cortex_rules(name);
+            CREATE INDEX IF NOT EXISTS idx_rules_enabled ON cortex_rules(enabled);
+
+            CREATE TABLE IF NOT EXISTS location_goals (
+                location TEXT PRIMARY KEY,
+                goal TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS sensor_values (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts INTEGER NOT NULL,
+                device_id TEXT NOT NULL,
+                sensor_id TEXT NOT NULL,
+                value REAL NOT NULL,
+                source_topic TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_sv_ts ON sensor_values(ts);
+            CREATE INDEX IF NOT EXISTS idx_sv_device_sensor ON sensor_values(device_id, sensor_id, ts);
+            CREATE INDEX IF NOT EXISTS idx_sv_device_ts ON sensor_values(device_id, ts);
         """)
 
         self._run_migrations()
@@ -279,6 +307,24 @@ class SqliteClient:
 
         db.execute("DROP TABLE IF EXISTS relay_config")
         db.execute("UPDATE sensor_readings SET device_id = 'esp32-1' WHERE device_id IS NULL")
+
+        # Migrate sensor_readings → sensor_values (one-time)
+        sv_count = db.execute("SELECT COUNT(*) FROM sensor_values").fetchone()[0]
+        sr_count = db.execute("SELECT COUNT(*) FROM sensor_readings").fetchone()[0]
+        if sv_count == 0 and sr_count > 0:
+            logger.info(f"Migration: Converting {sr_count} sensor_readings to sensor_values")
+            db.execute(
+                "INSERT INTO sensor_values (ts, device_id, sensor_id, value, source_topic) "
+                "SELECT ts, COALESCE(device_id, 'esp32-1'), 'temp1', temp, source_topic "
+                "FROM sensor_readings"
+            )
+            db.execute(
+                "INSERT INTO sensor_values (ts, device_id, sensor_id, value, source_topic) "
+                "SELECT ts, COALESCE(device_id, 'esp32-1'), 'hum1', humidity, source_topic "
+                "FROM sensor_readings"
+            )
+            logger.info("Migration: sensor_values populated")
+
         db.commit()
 
     def _get_db(self) -> sqlite3.Connection:
@@ -291,98 +337,97 @@ class SqliteClient:
             self._db.close()
             self._db = None
 
-    # ── Sensor Readings ──────────────────────────────────────────────
+    # ── Sensor Values (generic EAV) ─────────────────────────────────
 
-    def insert_reading(self, row: TelemetryRow) -> None:
+    def insert_sensor_values(self, values: list[SensorValue]) -> None:
+        """Bulk insert sensor values (one row per sensor per timestamp)."""
+        if not values:
+            return
         db = self._get_db()
-        db.execute(
-            "INSERT INTO sensor_readings (ts, temp, humidity, source_topic, device_id) VALUES (?, ?, ?, ?, ?)",
-            (row.ts, row.temp, row.humidity, row.source_topic, row.device_id),
+        db.executemany(
+            "INSERT INTO sensor_values (ts, device_id, sensor_id, value, source_topic) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [(v.ts, v.device_id, v.sensor_id, v.value, v.source_topic) for v in values],
         )
         db.commit()
 
-    def query_history_raw(
+    def query_sensor_values(
         self,
         since_ms: int,
         until_ms: int,
-        limit: int = 5000,
         device_id: str | None = None,
-    ) -> list[TelemetryRow]:
+        sensor_id: str | None = None,
+        limit: int = 5000,
+    ) -> list[SensorValue]:
+        """Query generic sensor values, optionally filtered by device and sensor."""
         db = self._get_db()
+        sql = "SELECT ts, device_id, sensor_id, value, source_topic FROM sensor_values WHERE ts >= ? AND ts <= ?"
+        params: list[Any] = [since_ms, until_ms]
+
         if device_id:
-            cursor = db.execute(
-                "SELECT ts, temp, humidity, source_topic, device_id FROM sensor_readings "
-                "WHERE ts >= ? AND ts <= ? AND device_id = ? ORDER BY ts ASC LIMIT ?",
-                (since_ms, until_ms, device_id, limit),
-            )
-        else:
-            cursor = db.execute(
-                "SELECT ts, temp, humidity, source_topic, device_id FROM sensor_readings "
-                "WHERE ts >= ? AND ts <= ? ORDER BY ts ASC LIMIT ?",
-                (since_ms, until_ms, limit),
-            )
+            sql += " AND device_id = ?"
+            params.append(device_id)
+        if sensor_id:
+            sql += " AND sensor_id = ?"
+            params.append(sensor_id)
+
+        sql += " ORDER BY ts ASC LIMIT ?"
+        params.append(limit)
+
+        cursor = db.execute(sql, params)
         return [
-            TelemetryRow(
+            SensorValue(
                 ts=row["ts"],
-                temp=row["temp"],
-                humidity=row["humidity"],
-                source_topic=row["source_topic"],
                 device_id=row["device_id"],
+                sensor_id=row["sensor_id"],
+                value=row["value"],
+                source_topic=row["source_topic"],
             )
             for row in cursor.fetchall()
         ]
 
-    def query_history_bucketed(
+    def query_sensor_values_bucketed(
         self,
         since_ms: int,
         until_ms: int,
         bucket_ms: int,
-        limit: int = 5000,
         device_id: str | None = None,
-    ) -> list[TelemetryBucketRow]:
+        sensor_id: str | None = None,
+        limit: int = 5000,
+    ) -> list[dict]:
+        """Query bucketed (time-averaged) sensor values. Returns list of dicts."""
         db = self._get_db()
+        sql = """
+            SELECT
+                (CAST(ts / ? AS INTEGER) * ?) AS bucket_ts,
+                device_id,
+                sensor_id,
+                AVG(value) AS value,
+                COUNT(1) AS count
+            FROM sensor_values
+            WHERE ts >= ? AND ts <= ?
+        """
+        params: list[Any] = [bucket_ms, bucket_ms, since_ms, until_ms]
+
         if device_id:
-            cursor = db.execute(
-                """
-                SELECT
-                    (CAST(ts / ? AS INTEGER) * ?) AS ts,
-                    AVG(temp) AS temp,
-                    AVG(humidity) AS humidity,
-                    COUNT(1) AS count,
-                    device_id
-                FROM sensor_readings
-                WHERE ts >= ? AND ts <= ? AND device_id = ?
-                GROUP BY (CAST(ts / ? AS INTEGER) * ?)
-                ORDER BY ts ASC
-                LIMIT ?
-                """,
-                (bucket_ms, bucket_ms, since_ms, until_ms, device_id, bucket_ms, bucket_ms, limit),
-            )
-        else:
-            cursor = db.execute(
-                """
-                SELECT
-                    (CAST(ts / ? AS INTEGER) * ?) AS ts,
-                    AVG(temp) AS temp,
-                    AVG(humidity) AS humidity,
-                    COUNT(1) AS count,
-                    device_id
-                FROM sensor_readings
-                WHERE ts >= ? AND ts <= ?
-                GROUP BY (CAST(ts / ? AS INTEGER) * ?)
-                ORDER BY ts ASC
-                LIMIT ?
-                """,
-                (bucket_ms, bucket_ms, since_ms, until_ms, bucket_ms, bucket_ms, limit),
-            )
+            sql += " AND device_id = ?"
+            params.append(device_id)
+        if sensor_id:
+            sql += " AND sensor_id = ?"
+            params.append(sensor_id)
+
+        sql += " GROUP BY bucket_ts, device_id, sensor_id ORDER BY bucket_ts ASC LIMIT ?"
+        params.append(limit)
+
+        cursor = db.execute(sql, params)
         return [
-            TelemetryBucketRow(
-                ts=row["ts"],
-                temp=row["temp"],
-                humidity=row["humidity"],
-                count=row["count"],
-                device_id=row["device_id"],
-            )
+            {
+                "ts": row["bucket_ts"],
+                "device_id": row["device_id"],
+                "sensor_id": row["sensor_id"],
+                "value": row["value"],
+                "count": row["count"],
+            }
             for row in cursor.fetchall()
         ]
 
@@ -404,7 +449,7 @@ class SqliteClient:
 
         device.capabilities.actuators[actuator_idx].state = state
         caps_json = json.dumps({
-            "sensors": [{"id": s.id, "type": s.type, **({"name": s.name} if s.name else {})} for s in device.capabilities.sensors],
+            "sensors": [{"id": s.id, "type": s.type, **({"name": s.name} if s.name else {}), **({"unit": s.unit} if s.unit else {})} for s in device.capabilities.sensors],
             "actuators": [
                 {
                     "id": a.id, "type": a.type,
@@ -760,16 +805,6 @@ class SqliteClient:
         db.commit()
         return cursor.rowcount > 0
 
-    def set_device_online(self, device_id: str) -> bool:
-        db = self._get_db()
-        now = int(time.time() * 1000)
-        cursor = db.execute(
-            "UPDATE devices SET online = 1, last_seen = ?, updated_at = ? WHERE id = ?",
-            (now, now, device_id),
-        )
-        db.commit()
-        return cursor.rowcount > 0
-
     def get_device(self, device_id: str) -> Device | None:
         db = self._get_db()
         cursor = db.execute(
@@ -928,6 +963,16 @@ class SqliteClient:
         ).fetchone()
         return row is not None
 
+    def purge_rejected_suggestions(self, older_than_ms: int) -> int:
+        """Delete rejected suggestions resolved before the given timestamp (ms)."""
+        db = self._get_db()
+        cursor = db.execute(
+            "DELETE FROM cortex_suggestions WHERE status = 'rejected' AND resolved_at < ?",
+            (older_than_ms,),
+        )
+        db.commit()
+        return cursor.rowcount
+
     def count_suggestions_by_status(self) -> dict[str, int]:
         db = self._get_db()
         cursor = db.execute(
@@ -938,13 +983,258 @@ class SqliteClient:
             counts[row["status"]] = row["cnt"]
         return counts
 
+    # ── Rules (CRUD) ──────────────────────────────────────────────────
+
+    def insert_rule(
+        self,
+        name: str,
+        description: str,
+        condition: dict,
+        action: dict,
+        enabled: bool = True,
+        source: str = "user",
+    ) -> dict:
+        """Insert a new rule. Generates a UUID id. Returns the rule dict."""
+        db = self._get_db()
+        rule_id = str(uuid.uuid4())
+        now = int(time.time() * 1000)
+        db.execute(
+            "INSERT INTO cortex_rules (id, name, description, condition, action, enabled, source, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (rule_id, name, description, json.dumps(condition), json.dumps(action),
+             1 if enabled else 0, source, now, now),
+        )
+        db.commit()
+        return self.get_rule(rule_id)
+
+    def update_rule(
+        self,
+        rule_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        condition: dict | None = None,
+        action: dict | None = None,
+        enabled: bool | None = None,
+    ) -> dict | None:
+        """Update a rule by id. Only non-None fields are updated. Returns updated rule or None."""
+        db = self._get_db()
+        sets: list[str] = []
+        params: list[Any] = []
+
+        if name is not None:
+            sets.append("name = ?")
+            params.append(name)
+        if description is not None:
+            sets.append("description = ?")
+            params.append(description)
+        if condition is not None:
+            sets.append("condition = ?")
+            params.append(json.dumps(condition))
+        if action is not None:
+            sets.append("action = ?")
+            params.append(json.dumps(action))
+        if enabled is not None:
+            sets.append("enabled = ?")
+            params.append(1 if enabled else 0)
+
+        if not sets:
+            return self.get_rule(rule_id)
+
+        sets.append("updated_at = ?")
+        params.append(int(time.time() * 1000))
+        params.append(rule_id)
+
+        cursor = db.execute(
+            f"UPDATE cortex_rules SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+        db.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_rule(rule_id)
+
+    def delete_rule(self, rule_id: str) -> bool:
+        """Delete a rule by id. Cascade deletes associated suggestions by rule name."""
+        db = self._get_db()
+        # Get the rule name first for cascade
+        row = db.execute("SELECT name FROM cortex_rules WHERE id = ?", (rule_id,)).fetchone()
+        if not row:
+            return False
+
+        rule_name = row["name"]
+        try:
+            db.execute("DELETE FROM cortex_suggestions WHERE rule_name = ?", (rule_name,))
+        except sqlite3.OperationalError:
+            pass  # cortex_suggestions table may not exist yet
+        db.execute("DELETE FROM cortex_rules WHERE id = ?", (rule_id,))
+        db.commit()
+        return True
+
+    def get_rule(self, rule_id: str) -> dict | None:
+        """Get a rule by id."""
+        db = self._get_db()
+        row = db.execute("SELECT * FROM cortex_rules WHERE id = ?", (rule_id,)).fetchone()
+        if not row:
+            return None
+        return self._rule_row_to_dict(row)
+
+    def get_rule_by_name(self, name: str) -> dict | None:
+        """Get a rule by name."""
+        db = self._get_db()
+        row = db.execute("SELECT * FROM cortex_rules WHERE name = ?", (name,)).fetchone()
+        if not row:
+            return None
+        return self._rule_row_to_dict(row)
+
+    def get_all_rules(self) -> list[dict]:
+        """Get all rules ordered by created_at."""
+        db = self._get_db()
+        cursor = db.execute("SELECT * FROM cortex_rules ORDER BY created_at ASC")
+        return [self._rule_row_to_dict(row) for row in cursor.fetchall()]
+
+    def update_rule_enabled(self, rule_id: str, enabled: bool) -> bool:
+        """Toggle a rule's enabled state."""
+        db = self._get_db()
+        cursor = db.execute(
+            "UPDATE cortex_rules SET enabled = ?, updated_at = ? WHERE id = ?",
+            (1 if enabled else 0, int(time.time() * 1000), rule_id),
+        )
+        db.commit()
+        return cursor.rowcount > 0
+
+    def update_rule_condition_field(self, rule_id: str, field: str, value: Any) -> bool:
+        """Update a single field within a rule's condition JSON. Used by RuleAdvisor."""
+        db = self._get_db()
+        row = db.execute("SELECT condition FROM cortex_rules WHERE id = ?", (rule_id,)).fetchone()
+        if not row:
+            return False
+        condition = json.loads(row["condition"])
+        condition[field] = value
+        cursor = db.execute(
+            "UPDATE cortex_rules SET condition = ?, updated_at = ? WHERE id = ?",
+            (json.dumps(condition), int(time.time() * 1000), rule_id),
+        )
+        db.commit()
+        return cursor.rowcount > 0
+
+    def count_rules(self) -> int:
+        """Count total rules."""
+        db = self._get_db()
+        return db.execute("SELECT COUNT(*) FROM cortex_rules").fetchone()[0]
+
+    def seed_rules_from_yaml(self, yaml_path: str) -> int:
+        """Import rules from YAML into DB if the rules table is empty.
+        Returns number of rules imported (0 if table already has rules or file missing).
+        """
+        if self.count_rules() > 0:
+            logger.info("Rules table already populated, skipping seed")
+            return 0
+
+        path = Path(yaml_path)
+        if not path.exists():
+            logger.warning(f"YAML seed file not found: {yaml_path}")
+            return 0
+
+        import yaml
+        with open(path) as f:
+            config = yaml.safe_load(f)
+
+        rules_data = config.get("rules", [])
+        if not rules_data:
+            return 0
+
+        count = 0
+        for rule_data in rules_data:
+            condition = rule_data.get("condition", {})
+            action = rule_data.get("action", {})
+            self.insert_rule(
+                name=rule_data.get("name", ""),
+                description=rule_data.get("description", ""),
+                condition=condition,
+                action=action,
+                enabled=rule_data.get("enabled", True),
+                source="yaml",
+            )
+            count += 1
+
+        logger.info(f"Seeded {count} rules from {yaml_path}")
+        return count
+
+    def _rule_row_to_dict(self, row: sqlite3.Row) -> dict:
+        """Convert a cortex_rules row to a camelCase dict."""
+        created_at = row["created_at"]
+        updated_at = row["updated_at"]
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "description": row["description"],
+            "condition": json.loads(row["condition"]),
+            "action": json.loads(row["action"]),
+            "enabled": bool(row["enabled"]),
+            "source": row["source"],
+            "modified": updated_at > created_at,
+            "createdAt": created_at,
+            "updatedAt": updated_at,
+        }
+
+    # ── Location Goals ─────────────────────────────────────────────
+
+    def upsert_location_goal(self, location: str, goal: str) -> dict:
+        """Insert or replace a location goal."""
+        db = self._get_db()
+        now = int(time.time() * 1000)
+        db.execute(
+            "INSERT INTO location_goals (location, goal, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(location) DO UPDATE SET goal = excluded.goal, updated_at = excluded.updated_at",
+            (location, goal, now, now),
+        )
+        db.commit()
+        return {"location": location, "goal": goal, "createdAt": now, "updatedAt": now}
+
+    def get_location_goal(self, location: str) -> dict | None:
+        """Get the goal for a location."""
+        db = self._get_db()
+        row = db.execute(
+            "SELECT * FROM location_goals WHERE location = ?", (location,)
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "location": row["location"],
+            "goal": row["goal"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    def get_all_location_goals(self) -> list[dict]:
+        """Get all location goals."""
+        db = self._get_db()
+        rows = db.execute("SELECT * FROM location_goals ORDER BY location").fetchall()
+        return [
+            {
+                "location": row["location"],
+                "goal": row["goal"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def delete_location_goal(self, location: str) -> bool:
+        """Delete a location goal."""
+        db = self._get_db()
+        cursor = db.execute("DELETE FROM location_goals WHERE location = ?", (location,))
+        db.commit()
+        return cursor.rowcount > 0
+
     def _row_to_device(self, row: sqlite3.Row) -> Device:
         caps_raw = json.loads(row["capabilities"]) if row["capabilities"] else {"sensors": [], "actuators": []}
         actuator_names_raw = json.loads(row["actuator_names"]) if row["actuator_names"] else {}
 
         capabilities = DeviceCapabilities(
             sensors=[
-                Sensor(id=s["id"], type=s["type"], name=s.get("name"))
+                Sensor(id=s["id"], type=s["type"], name=s.get("name"), unit=s.get("unit"))
                 for s in caps_raw.get("sensors", [])
             ],
             actuators=[

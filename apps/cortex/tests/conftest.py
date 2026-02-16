@@ -36,14 +36,22 @@ def mock_redis():
         def __init__(self):
             self._readings = []
 
-        def store_reading(self, ts, temp, humidity, source_topic=None, device_id=""):
+        def store_reading(self, ts, temp=None, humidity=None, source_topic=None, device_id="", readings=None):
             from src.services.redis_client import RedisReading
+
+            if readings is not None:
+                readings_dict = readings
+            else:
+                readings_dict = {}
+                if temp is not None:
+                    readings_dict["temp1"] = temp
+                if humidity is not None:
+                    readings_dict["hum1"] = humidity
 
             self._readings.append(
                 RedisReading(
                     ts=ts,
-                    temp=temp,
-                    humidity=humidity,
+                    readings=readings_dict,
                     source_topic=source_topic,
                     device_id=device_id,
                 )
@@ -71,18 +79,22 @@ def mock_redis():
 def telemetry_factory():
     """Factory for creating TelemetryMessage instances."""
 
-    def _make(device_id="esp32-test", location="room1", temp=22.0, humidity=55.0, ts=None):
+    def _make(device_id="esp32-test", location="room1", temp=22.0, humidity=55.0, ts=None, extra_readings=None):
         from src.models.telemetry import TelemetryMessage, Reading
+
+        readings = [
+            Reading(id="temp1", value=temp, unit="C"),
+            Reading(id="hum1", value=humidity, unit="%"),
+        ]
+        if extra_readings:
+            readings.extend(extra_readings)
 
         return TelemetryMessage(
             version=1,
             ts=ts or int(time.time() * 1000),
             device_id=device_id,
             location=location,
-            readings=[
-                Reading(id="temp1", value=temp, unit="C"),
-                Reading(id="hum1", value=humidity, unit="%"),
-            ],
+            readings=readings,
         )
 
     return _make

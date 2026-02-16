@@ -7,7 +7,8 @@ orchestrator's context builder and the intent executor's analyze handler.
 
 import logging
 import time
-from dataclasses import dataclass
+from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -20,9 +21,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class MergedReading:
     ts: int
-    temp: float
-    humidity: float
-    device_id: str
+    readings: dict[str, float] = field(default_factory=dict)  # sensor_id -> value
+    device_id: str = ""
 
 
 class DataReader:
@@ -41,33 +41,36 @@ class DataReader:
     ) -> list[MergedReading]:
         """
         Fetch and merge readings from both Redis and SQLite.
-        Returns sorted by timestamp ascending, deduplicated by ts.
+        Returns sorted by timestamp ascending, deduplicated by (ts, device_id).
         """
         until_ms = until_ms or int(time.time() * 1000)
 
         redis_readings = self._redis.get_readings_in_range(since_ms, until_ms, device_id)
-        sqlite_readings = self._sqlite.query_history_raw(since_ms, until_ms, limit, device_id)
 
-        seen_ts: set[int] = set()
+        # Query from new sensor_values table
+        sv_rows = self._sqlite.query_sensor_values(since_ms, until_ms, device_id=device_id, limit=limit * 10)
+
+        # Group SQLite sensor_values by (ts, device_id)
+        sqlite_groups: dict[tuple[int, str], dict[str, float]] = defaultdict(dict)
+        for sv in sv_rows:
+            sqlite_groups[(sv.ts, sv.device_id)][sv.sensor_id] = sv.value
+
+        seen_keys: set[tuple[int, str]] = set()
         merged: list[MergedReading] = []
 
         # SQLite first (cold, authoritative for older data)
-        for r in sqlite_readings:
-            if r.ts not in seen_ts:
-                seen_ts.add(r.ts)
-                merged.append(MergedReading(
-                    ts=r.ts, temp=r.temp, humidity=r.humidity,
-                    device_id=r.device_id or "",
-                ))
+        for (ts, dev_id), readings_dict in sqlite_groups.items():
+            key = (ts, dev_id)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                merged.append(MergedReading(ts=ts, readings=readings_dict, device_id=dev_id))
 
         # Redis overlay (hot, recent data)
         for r in redis_readings:
-            if r.ts not in seen_ts:
-                seen_ts.add(r.ts)
-                merged.append(MergedReading(
-                    ts=r.ts, temp=r.temp, humidity=r.humidity,
-                    device_id=r.device_id,
-                ))
+            key = (r.ts, r.device_id)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                merged.append(MergedReading(ts=r.ts, readings=dict(r.readings), device_id=r.device_id))
 
         merged.sort(key=lambda r: r.ts)
         return merged[:limit]
@@ -85,15 +88,14 @@ class DataReader:
     def extract_metric(
         self,
         readings: list[MergedReading],
-        metric: str,
+        sensor_id: str,
     ) -> tuple[list[float], list[int]]:
-        """Extract a single metric's values and timestamps from merged readings."""
+        """Extract a single sensor's values and timestamps from merged readings."""
         values: list[float] = []
         timestamps: list[int] = []
         for r in readings:
-            if metric == "temperature":
-                values.append(r.temp)
-            elif metric == "humidity":
-                values.append(r.humidity)
-            timestamps.append(r.ts)
+            val = r.readings.get(sensor_id)
+            if val is not None:
+                values.append(val)
+                timestamps.append(r.ts)
         return values, timestamps

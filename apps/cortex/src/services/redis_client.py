@@ -7,7 +7,7 @@ Ported from apps/api/src/lib/redis.ts — same key format and TTL strategy.
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import redis
 
@@ -19,19 +19,30 @@ TTL_SECONDS = 48 * 60 * 60  # 48 hours
 @dataclass
 class RedisReading:
     ts: int
-    temp: float
-    humidity: float
+    readings: dict[str, float] = field(default_factory=dict)  # sensor_id -> value
     source_topic: str | None = None
     device_id: str = ""
 
     def to_dict(self) -> dict:
         return {
             "ts": self.ts,
-            "temp": self.temp,
-            "humidity": self.humidity,
+            "readings": self.readings,
             "sourceTopic": self.source_topic,
             "deviceId": self.device_id,
         }
+
+
+def _parse_readings_dict(data: dict) -> dict[str, float]:
+    """Parse readings from stored JSON — handles both new and legacy formats."""
+    if "readings" in data and isinstance(data["readings"], dict):
+        return data["readings"]
+    # Legacy format: {temp: float, humidity: float}
+    result: dict[str, float] = {}
+    if "temp" in data:
+        result["temp1"] = data["temp"]
+    if "humidity" in data:
+        result["hum1"] = data["humidity"]
+    return result
 
 
 class RedisClient:
@@ -94,8 +105,7 @@ class RedisClient:
                         continue
                     readings.append(RedisReading(
                         ts=ts,
-                        temp=data["temp"],
-                        humidity=data["humidity"],
+                        readings=_parse_readings_dict(data),
                         source_topic=data.get("sourceTopic"),
                         device_id=data.get("deviceId", ""),
                     ))
@@ -126,8 +136,7 @@ class RedisClient:
                 data = json.loads(value)
                 readings.append(RedisReading(
                     ts=data["ts"],
-                    temp=data["temp"],
-                    humidity=data["humidity"],
+                    readings=_parse_readings_dict(data),
                     source_topic=data.get("sourceTopic"),
                     device_id=data.get("deviceId", ""),
                 ))

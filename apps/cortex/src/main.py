@@ -85,15 +85,6 @@ class Orchestrator:
         """Start all Cortex services."""
         logger.info("Starting Cortex...")
 
-        # Load decision engine
-        rules_path = Path(RULES_PATH)
-        if rules_path.exists():
-            self.engine = DecisionEngine.from_yaml(rules_path)
-            logger.info(f"Loaded {len(self.engine.rules)} rules from {rules_path}")
-        else:
-            logger.warning(f"Rules file not found: {rules_path}, using empty ruleset")
-            self.engine = DecisionEngine()
-
         # Initialize Ollama
         ollama = self._shared.init_ollama()
         if ollama.is_available():
@@ -111,6 +102,21 @@ class Orchestrator:
         # Get service references from the running FastAPI app
         from .voice_api import app, sqlite, redis_client, ws_server
         self._event_loop = asyncio.new_event_loop()
+
+        # Seed rules from YAML on first run, then load from SQLite
+        rules_path = Path(RULES_PATH)
+        seeded = sqlite.seed_rules_from_yaml(str(rules_path))
+        if seeded:
+            logger.info(f"Seeded {seeded} rules from {rules_path}")
+        self.engine = DecisionEngine.from_sqlite(sqlite)
+        logger.info(f"Loaded {len(self.engine.rules)} rules from SQLite")
+
+        # Load LLM config from YAML (not a rule, stays in YAML)
+        if rules_path.exists():
+            import yaml
+            with open(rules_path) as f:
+                yaml_config = yaml.safe_load(f)
+            self.engine.llm_config = yaml_config.get("llm", {})
 
         # Start event loop in background thread for async operations from MQTT callbacks
         def run_loop():
@@ -148,10 +154,25 @@ class Orchestrator:
         )
         logger.info("Phase 4: RuleAdvisor initialized, /api/cortex routes mounted")
 
+        # Phase 8: Initialize ChatSessionStore and RuleGenerator for chat-based rule generation
+        from .services.chat_session import ChatSessionStore
+        from .services.rule_generator import RuleGenerator
+        self._chat_session_store = ChatSessionStore()
+        self._rule_generator = RuleGenerator(sqlite, self._memory, ollama, ws_server)
+        app.state.chat_session_store = self._chat_session_store
+        app.state.rule_generator = self._rule_generator
+        app.state.engine = self.engine
+        logger.info("Phase 8: ChatSessionStore and RuleGenerator initialized")
+
         # Start rule advisor background job
-        from .services.background_jobs import start_rule_advisor_job
+        from .services.background_jobs import start_rule_advisor_job, start_suggestion_cleanup_job
+        from .config import REJECTED_SUGGESTION_TTL_S
         asyncio.run_coroutine_threadsafe(
             start_rule_advisor_job(self._rule_advisor, sqlite, ws_server),
+            self._event_loop,
+        )
+        asyncio.run_coroutine_threadsafe(
+            start_suggestion_cleanup_job(sqlite, REJECTED_SUGGESTION_TTL_S),
             self._event_loop,
         )
 
@@ -301,78 +322,68 @@ class Orchestrator:
                 return None
 
             from .services.analysis import build_trend_context
+            from .services.forecaster import linear_forecast, ewma_forecast
+            from .services.sensor_meta import guess_sensor_type
 
-            temp_values, temp_ts = self._data_reader.extract_metric(readings, "temperature")
-            hum_values, hum_ts = self._data_reader.extract_metric(readings, "humidity")
+            # Discover all sensor IDs from recent readings
+            all_sensor_ids: set[str] = set()
+            for r in readings:
+                all_sensor_ids.update(r.readings.keys())
 
             trends = {}
-            temp_trend = build_trend_context("temperature", temp_values, temp_ts)
-            if temp_trend:
-                trends["temp1"] = {
-                    "trend": temp_trend.trend,
-                    "rate": temp_trend.rate_of_change,
-                    "mean": temp_trend.mean_30m,
-                    "current": temp_trend.current_value,
-                }
-            hum_trend = build_trend_context("humidity", hum_values, hum_ts)
-            if hum_trend:
-                trends["hum1"] = {
-                    "trend": hum_trend.trend,
-                    "rate": hum_trend.rate_of_change,
-                    "mean": hum_trend.mean_30m,
-                    "current": hum_trend.current_value,
-                }
-
-            # Phase 3: Build forecast data for each sensor
-            from .services.forecaster import linear_forecast, ewma_forecast
-
             forecasts = {}
-            if temp_trend:
-                forecasts["temp1"] = {
-                    "rate": temp_trend.rate_of_change,
-                    "current": temp_trend.current_value,
-                    "predicted_10m": linear_forecast(temp_values, temp_ts, 10.0),
-                    "predicted_15m": linear_forecast(temp_values, temp_ts, 15.0),
-                    "ewma": ewma_forecast(temp_values),
-                }
-            if hum_trend:
-                forecasts["hum1"] = {
-                    "rate": hum_trend.rate_of_change,
-                    "current": hum_trend.current_value,
-                    "predicted_10m": linear_forecast(hum_values, hum_ts, 10.0),
-                    "predicted_15m": linear_forecast(hum_values, hum_ts, 15.0),
-                    "ewma": ewma_forecast(hum_values),
-                }
+            for sensor_id in sorted(all_sensor_ids):
+                stype = guess_sensor_type(sensor_id)
+                values, ts_list = self._data_reader.extract_metric(readings, sensor_id)
+                trend = build_trend_context(stype, values, ts_list)
+                if trend:
+                    trends[sensor_id] = {
+                        "trend": trend.trend,
+                        "rate": trend.rate_of_change,
+                        "mean": trend.mean_30m,
+                        "current": trend.current_value,
+                    }
+                    forecasts[sensor_id] = {
+                        "rate": trend.rate_of_change,
+                        "current": trend.current_value,
+                        "predicted_10m": linear_forecast(values, ts_list, 10.0),
+                        "predicted_15m": linear_forecast(values, ts_list, 15.0),
+                        "ewma": ewma_forecast(values),
+                    }
 
             # Get baselines for current hour
             baselines = {}
             if self._memory:
                 from datetime import datetime
                 current_hour = datetime.now().hour
-                for sensor, metric in [("temp1", "temperature"), ("hum1", "humidity")]:
-                    baseline = self._memory.get_baseline(device_id, metric, current_hour)
+                for sensor_id in all_sensor_ids:
+                    stype = guess_sensor_type(sensor_id)
+                    baseline = self._memory.get_baseline(device_id, stype, current_hour)
                     if baseline and baseline.sample_count >= 10:
-                        current = trends.get(sensor, {}).get("current")
+                        current = trends.get(sensor_id, {}).get("current")
                         deviation = None
                         if current is not None and baseline.std_dev > 0:
                             deviation = (current - baseline.avg_value) / baseline.std_dev
-                        baselines[sensor] = {
+                        baselines[sensor_id] = {
                             "avg": baseline.avg_value,
                             "std_dev": baseline.std_dev,
                             "samples": baseline.sample_count,
                             "deviation": deviation,
                         }
 
-            # Phase 2: effectiveness summaries
+            # Phase 2: effectiveness summaries — query all actuators from device capabilities
             effectiveness = {}
             if self._outcome_tracker:
-                devices = self._shared.state.devices
-                device = devices.get(device_id, {})
-                targets = ["relay1"]  # extensible when more actuators are known
-                for target in targets:
-                    summary = self._outcome_tracker.get_effectiveness_summary(device_id, target)
+                device = self._sqlite.get_device(device_id) if self._sqlite else None
+                if device:
+                    for actuator in device.capabilities.actuators:
+                        summary = self._outcome_tracker.get_effectiveness_summary(device_id, actuator.id)
+                        if summary:
+                            effectiveness[actuator.id] = summary
+                else:
+                    summary = self._outcome_tracker.get_effectiveness_summary(device_id, "relay1")
                     if summary:
-                        effectiveness[target] = summary
+                        effectiveness["relay1"] = summary
 
             self._context_cache = {
                 "trends": trends,
@@ -407,19 +418,15 @@ class Orchestrator:
             return
         try:
             from datetime import datetime
+            from .services.sensor_meta import guess_sensor_type
             current_hour = datetime.now().hour
 
-            temp_reading = telemetry.get_reading("temp1")
-            if temp_reading and isinstance(temp_reading.value, (int, float)):
-                self._memory.update_baseline(
-                    telemetry.device_id, "temperature", current_hour, float(temp_reading.value),
-                )
-
-            hum_reading = telemetry.get_reading("hum1")
-            if hum_reading and isinstance(hum_reading.value, (int, float)):
-                self._memory.update_baseline(
-                    telemetry.device_id, "humidity", current_hour, float(hum_reading.value),
-                )
+            for reading in telemetry.readings:
+                if isinstance(reading.value, (int, float)):
+                    stype = guess_sensor_type(reading.id)
+                    self._memory.update_baseline(
+                        telemetry.device_id, stype, current_hour, float(reading.value),
+                    )
         except Exception as e:
             logger.error(f"Failed to update baselines: {e}")
 

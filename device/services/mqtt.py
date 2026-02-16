@@ -88,7 +88,15 @@ class MqttService:
             self._client.ping()
 
     def is_connected(self) -> bool:
-        return self._connected
+        if not self._connected or not self._client:
+            return False
+        try:
+            self._client.ping()
+            return True
+        except:
+            self._connected = False
+            self._client = None
+            return False
 
     def set_last_will(self, topic: str, msg: str, retain: bool = False, qos: int = 0):
         """

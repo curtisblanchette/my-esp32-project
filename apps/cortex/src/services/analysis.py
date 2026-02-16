@@ -11,8 +11,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .redis_client import RedisReading
-from .sqlite_client import TelemetryRow
+from .data_reader import MergedReading
+from .sensor_meta import guess_sensor_type, sensor_label, sensor_unit as get_sensor_unit
 
 
 @dataclass
@@ -218,33 +218,39 @@ def build_trend_context(
 
 def analyze_sensor_data(
     metric: str,
-    redis_readings: list[RedisReading],
-    sqlite_readings: list[TelemetryRow],
+    readings: list[MergedReading],
 ) -> dict[str, Any]:
-    """Analyze sensor data from both Redis and SQLite sources."""
-    # Merge and sort by timestamp
-    all_readings: list[dict] = []
-    for r in sqlite_readings:
-        all_readings.append({"ts": r.ts, "temp": r.temp, "humidity": r.humidity})
-    for r in redis_readings:
-        all_readings.append({"ts": r.ts, "temp": r.temp, "humidity": r.humidity})
+    """Analyze sensor data from merged readings (generic, any sensor type).
 
-    all_readings.sort(key=lambda r: r["ts"])
-
-    if not all_readings:
+    Args:
+        metric: sensor type to analyze ("temperature", "humidity", "all")
+        readings: list of MergedReading from DataReader
+    """
+    if not readings:
         return {"dataPoints": 0}
 
-    result: dict[str, Any] = {"dataPoints": len(all_readings)}
+    result: dict[str, Any] = {"dataPoints": len(readings)}
 
-    if metric in ("temperature", "all"):
-        temps = [r["temp"] for r in all_readings]
-        timestamps = [r["ts"] for r in all_readings]
-        result["temperature"] = analyze_metric("temperature", temps, timestamps)
+    # Discover all sensor IDs across readings
+    all_sensor_ids: set[str] = set()
+    for r in readings:
+        all_sensor_ids.update(r.readings.keys())
 
-    if metric in ("humidity", "all"):
-        humidities = [r["humidity"] for r in all_readings]
-        timestamps = [r["ts"] for r in all_readings]
-        result["humidity"] = analyze_metric("humidity", humidities, timestamps)
+    for sensor_id in sorted(all_sensor_ids):
+        stype = guess_sensor_type(sensor_id)
+        if metric != "all" and stype != metric:
+            continue
+
+        values = []
+        timestamps = []
+        for r in readings:
+            val = r.readings.get(sensor_id)
+            if val is not None:
+                values.append(val)
+                timestamps.append(r.ts)
+
+        if values:
+            result[stype] = analyze_metric(stype, values, timestamps)
 
     return result
 
@@ -281,11 +287,14 @@ def format_analysis_reply(
 
     parts.append(f"\n\n<detail>\n📊 Analyzed {analysis['dataPoints']} readings")
 
-    def format_metric(data: SensorAnalysis) -> None:
-        unit = "°C" if data.metric == "temperature" else "%"
-        icon = "🌡️" if data.metric == "temperature" else "💧"
+    _METRIC_ICONS = {"temperature": "🌡️", "humidity": "💧", "soil_moisture": "🌱",
+                     "light_level": "☀️", "co2": "🫧", "pressure": "🌀"}
 
-        parts.append(f"\n\n**{icon} {data.metric.capitalize()}:**")
+    def format_metric(data: SensorAnalysis) -> None:
+        unit = get_sensor_unit(data.metric)
+        icon = _METRIC_ICONS.get(data.metric, "📊")
+
+        parts.append(f"\n\n**{icon} {sensor_label(data.metric)}:**")
         parts.append(f"• Range: {data.stats.min:.1f}{unit} - {data.stats.max:.1f}{unit}")
         parts.append(f"• Average: {data.stats.mean:.1f}{unit} (±{data.stats.std_dev:.2f})")
 
@@ -316,10 +325,10 @@ def format_analysis_reply(
         else:
             parts.append("\n✅ No anomalies detected")
 
-    if "temperature" in analysis and isinstance(analysis["temperature"], SensorAnalysis):
-        format_metric(analysis["temperature"])
-    if "humidity" in analysis and isinstance(analysis["humidity"], SensorAnalysis):
-        format_metric(analysis["humidity"])
+    # Iterate all metrics found in analysis results
+    for key, val in analysis.items():
+        if isinstance(val, SensorAnalysis):
+            format_metric(val)
 
     parts.append("</detail>")
 

@@ -2,11 +2,18 @@
 
 import time
 
-from src.services.sqlite_client import TelemetryRow
+from src.services.sqlite_client import SensorValue
 
 
-def _insert_sqlite(db, ts, temp, humidity, device_id="esp32-1"):
-    db.insert_reading(TelemetryRow(ts=ts, temp=temp, humidity=humidity, source_topic="mqtt", device_id=device_id))
+def _insert_sv(db, ts, device_id="esp32-1", readings=None):
+    """Insert sensor values into the new generic sensor_values table."""
+    if readings is None:
+        readings = {"temp1": 22.0, "hum1": 55.0}
+    values = [
+        SensorValue(ts=ts, device_id=device_id, sensor_id=sid, value=val, source_topic="mqtt")
+        for sid, val in readings.items()
+    ]
+    db.insert_sensor_values(values)
 
 
 class TestDataReader:
@@ -16,8 +23,8 @@ class TestDataReader:
         now = int(time.time() * 1000)
 
         # Insert into SQLite (older data)
-        _insert_sqlite(sqlite_db, now - 120_000, 22.0, 55.0)
-        _insert_sqlite(sqlite_db, now - 60_000, 22.5, 54.0)
+        _insert_sv(sqlite_db, now - 120_000, readings={"temp1": 22.0, "hum1": 55.0})
+        _insert_sv(sqlite_db, now - 60_000, readings={"temp1": 22.5, "hum1": 54.0})
 
         # Insert into mock Redis (newer data)
         mock_redis.store_reading(now - 30_000, 23.0, 53.0, "mqtt", "esp32-1")
@@ -38,7 +45,7 @@ class TestDataReader:
         ts = now - 60_000
 
         # Same timestamp in both sources
-        _insert_sqlite(sqlite_db, ts, 22.0, 55.0)
+        _insert_sv(sqlite_db, ts, readings={"temp1": 22.0, "hum1": 55.0})
         mock_redis.store_reading(ts, 22.0, 55.0, "mqtt", "esp32-1")
 
         reader = DataReader(mock_redis, sqlite_db)
@@ -61,31 +68,46 @@ class TestDataReader:
 
         assert len(readings) == 2
 
-    def test_extract_metric_temperature(self, sqlite_db, mock_redis):
+    def test_extract_metric_by_sensor_id(self, sqlite_db, mock_redis):
         from src.services.data_reader import DataReader, MergedReading
 
         reader = DataReader(mock_redis, sqlite_db)
         readings = [
-            MergedReading(ts=1000, temp=22.0, humidity=55.0, device_id="esp32-1"),
-            MergedReading(ts=2000, temp=23.0, humidity=54.0, device_id="esp32-1"),
+            MergedReading(ts=1000, readings={"temp1": 22.0, "hum1": 55.0}, device_id="esp32-1"),
+            MergedReading(ts=2000, readings={"temp1": 23.0, "hum1": 54.0}, device_id="esp32-1"),
         ]
 
-        values, timestamps = reader.extract_metric(readings, "temperature")
+        values, timestamps = reader.extract_metric(readings, "temp1")
         assert values == [22.0, 23.0]
         assert timestamps == [1000, 2000]
 
-    def test_extract_metric_humidity(self, sqlite_db, mock_redis):
+    def test_extract_metric_humidity_sensor(self, sqlite_db, mock_redis):
         from src.services.data_reader import DataReader, MergedReading
 
         reader = DataReader(mock_redis, sqlite_db)
         readings = [
-            MergedReading(ts=1000, temp=22.0, humidity=55.0, device_id="esp32-1"),
-            MergedReading(ts=2000, temp=23.0, humidity=54.0, device_id="esp32-1"),
+            MergedReading(ts=1000, readings={"temp1": 22.0, "hum1": 55.0}, device_id="esp32-1"),
+            MergedReading(ts=2000, readings={"temp1": 23.0, "hum1": 54.0}, device_id="esp32-1"),
         ]
 
-        values, timestamps = reader.extract_metric(readings, "humidity")
+        values, timestamps = reader.extract_metric(readings, "hum1")
         assert values == [55.0, 54.0]
         assert timestamps == [1000, 2000]
+
+    def test_extract_metric_skips_missing(self, sqlite_db, mock_redis):
+        """Readings that don't have the requested sensor_id are skipped."""
+        from src.services.data_reader import DataReader, MergedReading
+
+        reader = DataReader(mock_redis, sqlite_db)
+        readings = [
+            MergedReading(ts=1000, readings={"temp1": 22.0}, device_id="esp32-1"),
+            MergedReading(ts=2000, readings={"hum1": 54.0}, device_id="esp32-1"),
+            MergedReading(ts=3000, readings={"temp1": 24.0, "hum1": 53.0}, device_id="esp32-1"),
+        ]
+
+        values, timestamps = reader.extract_metric(readings, "temp1")
+        assert values == [22.0, 24.0]
+        assert timestamps == [1000, 3000]
 
     def test_limit_respected(self, sqlite_db, mock_redis):
         from src.services.data_reader import DataReader
@@ -110,3 +132,18 @@ class TestDataReader:
         readings = reader.get_readings(now - 5000, now, device_id="esp32-1")
         assert len(readings) == 1
         assert readings[0].device_id == "esp32-1"
+
+    def test_diverse_sensor_types(self, sqlite_db, mock_redis):
+        """Readings with diverse sensor types merge correctly."""
+        from src.services.data_reader import DataReader
+
+        now = int(time.time() * 1000)
+        _insert_sv(sqlite_db, now - 60_000, readings={"soil1": 42.0, "light1": 800.0})
+        mock_redis.store_reading(now, readings={"soil1": 45.0, "light1": 750.0}, device_id="esp32-1")
+
+        reader = DataReader(mock_redis, sqlite_db)
+        readings = reader.get_readings(now - 120_000, now, device_id="esp32-1")
+
+        assert len(readings) == 2
+        assert "soil1" in readings[0].readings
+        assert "light1" in readings[0].readings

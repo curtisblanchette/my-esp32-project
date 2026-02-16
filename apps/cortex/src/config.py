@@ -20,6 +20,7 @@ SQLITE_JOURNAL_MODE = os.getenv("SQLITE_JOURNAL_MODE", "WAL")
 
 # Rules Configuration
 RULES_PATH = os.getenv("RULES_PATH", "config/rules.yaml")
+REJECTED_SUGGESTION_TTL_S = int(os.getenv("REJECTED_SUGGESTION_TTL_S", str(7 * 24 * 60 * 60)))  # 7 days
 
 # Device defaults
 DEFAULT_DEVICE_ID = os.getenv("DEFAULT_DEVICE_ID", "esp32-1")

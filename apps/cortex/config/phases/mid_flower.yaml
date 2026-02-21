@@ -1,0 +1,16 @@
+# Mid-flower phase target setpoints
+day:
+  vpd: 1.2
+  t_air: 26.0
+  rh: 50.0
+  co2: 1200.0
+  dryback_rate: -0.015
+  theta: 0.35
+
+night:
+  vpd: 0.8
+  t_air: 21.0
+  rh: 55.0
+  co2: 420.0
+  dryback_rate: -0.008
+  theta: 0.35

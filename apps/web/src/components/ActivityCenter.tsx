@@ -1,5 +1,5 @@
 import React from "react";
-import { OBSERVATION_CATEGORIES, type Command, type DeviceEvent, type RuleSuggestion } from "../api";
+import { OBSERVATION_CATEGORIES, type Command, type DeviceEvent } from "../api";
 
 export type ErrorItem = {
   id: string;
@@ -11,21 +11,17 @@ export type ErrorItem = {
 type ActivityItem = {
   id: string;
   ts: number;
-  type: "command" | "event" | "error" | "suggestion";
+  type: "command" | "event" | "error";
   source: string;
   description: string;
   status?: string;
   reason?: string | null;
-  suggestionId?: string;
-  confidence?: number;
 };
 
 type RecentActivityProps = {
   commands: Command[];
   events: DeviceEvent[];
   errors?: ErrorItem[];
-  suggestions?: RuleSuggestion[];
-  onResolveAdjustment?: (id: string, action: "approve" | "reject") => void;
   maxItems?: number;
 };
 
@@ -102,44 +98,7 @@ function getStatusIcon(status: string): React.ReactElement {
   }
 }
 
-function getSuggestionIcon(status?: string): React.ReactElement {
-  switch (status) {
-    case "applied":
-      return (
-        <svg className="w-3.5 h-3.5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-        </svg>
-      );
-    case "rejected":
-      return (
-        <svg className="w-3.5 h-3.5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-        </svg>
-      );
-    default:
-      // Pending — lightbulb/idea icon
-      return (
-        <svg className="w-3.5 h-3.5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-        </svg>
-      );
-  }
-}
-
-function formatSuggestionDescription(s: RuleSuggestion): string {
-  const change = `${s.ruleName}.${s.field}: ${s.currentValue} → ${s.suggestedValue}`;
-  switch (s.status) {
-    case "applied":
-      return `Applied: ${change}`;
-    case "rejected":
-      return `Rejected: ${change}`;
-    default:
-      return change;
-  }
-}
-
-export function ActivityCenter({ commands, events, errors = [], suggestions = [], onResolveAdjustment, maxItems = 5 }: RecentActivityProps): React.ReactElement {
-  // Merge and sort commands, events, errors, and suggestions
+export function ActivityCenter({ commands, events, errors = [], maxItems = 5 }: RecentActivityProps): React.ReactElement {
   const items: ActivityItem[] = [
     ...commands.map((cmd) => ({
       id: `cmd-${cmd.id}`,
@@ -151,7 +110,7 @@ export function ActivityCenter({ commands, events, errors = [], suggestions = []
       reason: cmd.reason,
     })),
     ...events
-      .filter((e) => e.eventType !== "command_ack") // Don't duplicate ack info
+      .filter((e) => e.eventType !== "command_ack")
       .map((evt) => ({
         id: `evt-${evt.id}`,
         ts: evt.ts,
@@ -169,17 +128,6 @@ export function ActivityCenter({ commands, events, errors = [], suggestions = []
       description: err.message,
       status: "failed",
       reason: err.source || null,
-    })),
-    ...suggestions.map((s) => ({
-      id: `sug-${s.id}`,
-      ts: s.resolvedAt || s.createdAt,
-      type: "suggestion" as const,
-      source: "cortex",
-      description: formatSuggestionDescription(s),
-      status: s.status,
-      reason: s.reason,
-      suggestionId: s.id,
-      confidence: s.confidence,
     })),
   ];
 
@@ -208,8 +156,6 @@ export function ActivityCenter({ commands, events, errors = [], suggestions = []
                 <svg className="w-3.5 h-3.5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                 </svg>
-              ) : item.type === "suggestion" ? (
-                getSuggestionIcon(item.status)
               ) : item.type === "command" && item.status ? (
                 getStatusIcon(item.status)
               ) : item.source === "human" ? (
@@ -228,33 +174,12 @@ export function ActivityCenter({ commands, events, errors = [], suggestions = []
                 >
                   {badge.label}
                 </span>
-                {item.confidence != null && (
-                  <span className="px-1.5 py-0.5 text-[10px] rounded bg-white/5 text-white/50">
-                    {Math.round(item.confidence * 100)}%
-                  </span>
-                )}
                 <span className="text-xs opacity-50">{formatTime(item.ts)}</span>
               </div>
-              <div className={`text-sm mt-0.5 ${item.type === "suggestion" ? "" : "truncate"}`}>{item.description}</div>
+              <div className="text-sm mt-0.5 truncate">{item.description}</div>
               {item.reason && (
-                <div className={`text-xs opacity-50 mt-0.5 ${item.type === "suggestion" ? "" : "truncate"}`} title={item.reason}>
+                <div className="text-xs opacity-50 mt-0.5 truncate" title={item.reason}>
                   {item.reason}
-                </div>
-              )}
-              {item.type === "suggestion" && item.status === "pending" && item.suggestionId && onResolveAdjustment && (
-                <div className="flex gap-2 mt-1.5">
-                  <button
-                    onClick={() => onResolveAdjustment(item.suggestionId!, "approve")}
-                    className="px-2 py-0.5 text-[10px] font-medium rounded border border-green-500/30 bg-green-500/10 text-green-400 hover:bg-green-500/20 cursor-pointer transition-colors"
-                  >
-                    Approve
-                  </button>
-                  <button
-                    onClick={() => onResolveAdjustment(item.suggestionId!, "reject")}
-                    className="px-2 py-0.5 text-[10px] font-medium rounded border border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 cursor-pointer transition-colors"
-                  >
-                    Reject
-                  </button>
                 </div>
               )}
             </div>

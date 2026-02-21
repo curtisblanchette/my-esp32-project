@@ -27,6 +27,11 @@ ROOM_CONFIG_PATH = os.getenv("ROOM_CONFIG_PATH", "")
 DEFAULT_DEVICE_ID = os.getenv("DEFAULT_DEVICE_ID", "esp32-1")
 DEFAULT_LOCATION = os.getenv("DEFAULT_LOCATION", "room1")
 
+# MPC OSQP Controller (set MPC_MODE=osqp to use new OSQP-based MPC)
+MPC_MODE = os.getenv("MPC_MODE", "slsqp")  # "slsqp" (legacy) or "osqp" (new)
+MPC_PHASE = os.getenv("MPC_PHASE", "mid_flower")
+MPC_CONFIG_PATH = os.getenv("MPC_CONFIG_PATH", "config")
+
 # Voice Configuration
 VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "models/vosk-model-small-en-us-0.15")
 

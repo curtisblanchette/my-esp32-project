@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { normalizeLatest, type LatestReading, type RelayStatus, type Device, type DeviceEvent, type Command, type RuleSuggestion, type CortexRule } from "../api";
+import { normalizeLatest, type LatestReading, type RelayStatus, type Device, type DeviceEvent, type Command } from "../api";
 
 type WebSocketMessage =
   | { type: "latest"; data: LatestReading }
@@ -8,9 +8,7 @@ type WebSocketMessage =
   | { type: "events"; data: DeviceEvent[] }
   | { type: "event"; data: DeviceEvent }
   | { type: "commands"; data: Command[] }
-  | { type: "command"; data: Command }
-  | { type: "suggestions"; data: RuleSuggestion[] }
-  | { type: "rules"; data: CortexRule[] };
+  | { type: "command"; data: Command };
 
 interface UseWebSocketOptions {
   onLatestReading?: (reading: LatestReading) => void;
@@ -20,8 +18,6 @@ interface UseWebSocketOptions {
   onEventReceived?: (event: DeviceEvent) => void;
   onCommandsUpdate?: (commands: Command[]) => void;
   onCommandReceived?: (command: Command) => void;
-  onSuggestionsUpdate?: (suggestions: RuleSuggestion[]) => void;
-  onRulesUpdate?: (rules: CortexRule[]) => void;
   onError?: (error: Event) => void;
   reconnectInterval?: number;
 }
@@ -35,8 +31,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     onEventReceived,
     onCommandsUpdate,
     onCommandReceived,
-    onSuggestionsUpdate,
-    onRulesUpdate,
     onError,
     reconnectInterval = 3000,
   } = options;
@@ -99,10 +93,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
             onCommandsUpdate(message.data);
           } else if (message.type === "command" && onCommandReceived) {
             onCommandReceived(message.data);
-          } else if (message.type === "suggestions" && onSuggestionsUpdate) {
-            onSuggestionsUpdate(message.data);
-          } else if (message.type === "rules" && onRulesUpdate) {
-            onRulesUpdate(message.data);
           }
         } catch (error) {
           console.error("Error parsing WebSocket message:", error);
@@ -110,8 +100,6 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       };
 
       ws.onerror = () => {
-        // Only report errors if we're actively trying to connect
-        // (not during cleanup from Strict Mode or intentional disconnect)
         if (shouldConnectRef.current) {
           console.error("WebSocket connection failed");
           onError?.(new Event("error"));

@@ -8,13 +8,13 @@ On the device side, a configuration-driven MicroPython library handles the compl
 
 The same device capabilities that drive the firmware also drive the UI. When a device comes online, its birth message advertises its sensors and actuators to the [Cortex backend](#cortex-backend), which dynamically builds per-device panels in the [React dashboard](#web-dashboard) — complete with the correct controls for each actuator type (toggle switches, momentary pulse buttons), live sensor gauges, and historical charts. No frontend code changes are needed to support new devices; plug in an ESP32, define it in the registry, and it appears on the dashboard ready to control from anywhere on the local network via WebSocket, chat, or voice.
 
-AI operates through Model Predictive Control (MPC) converging on MQTT as a shared command bus. The [Cortex backend](#cortex-backend) subscribes to device telemetry and uses a physics-based MPC planner — rolling-horizon optimization with SLSQP that predicts environment response and computes optimal actuator intensities to meet grow profile goals. The same backend interprets natural language from [chat and voice](#voice--chat-processing-pipeline) through a local Ollama model, which returns structured JSON intents (command, query, history, analyze) that are executed identically regardless of input method. Devices don't know whether a command came from the MPC planner, the LLM, or a user — they all arrive as the same [MQTT message](#message-envelope-format-v1).
+AI operates through Model Predictive Control (MPC) converging on MQTT as a shared command bus. The [Cortex backend](#cortex-backend) subscribes to device telemetry and runs a dual-mode MPC system: a convex QP solver (OSQP) with a 7-state thermodynamic model, Extended Kalman Filter state estimation, and sub-100ms solve times for real-time control, or a legacy SLSQP nonlinear shooting planner for physics-based optimization. Both modes predict environment response and compute optimal actuator intensities to meet grow profile goals. The same backend interprets natural language from [chat and voice](#voice--chat-processing-pipeline) through a local Ollama model, which returns structured JSON intents (command, query, history, analyze) that are executed identically regardless of input method. Devices don't know whether a command came from the MPC planner, the LLM, or a user — they all arrive as the same [MQTT message](#message-envelope-format-v1).
 
 <img src="screenshots/carousel.gif" alt="Mycelium" width="830" />
 
 - **[Configuration-driven devices](#device-registry)** — declare sensors and actuators in `registry.json`, flash, and go
 - **[Dynamic dashboard](#web-dashboard)** — device panels, controls, and charts generated from device capabilities
-- **[MPC control](#ai-prefrontal)** — Model Predictive Control with physics-based optimization, rolling-horizon SLSQP solver, and goal-driven actuator scheduling
+- **[MPC control](#ai-prefrontal)** — Dual-mode Model Predictive Control: OSQP convex QP with 7-state thermodynamic model and EKF (sub-100ms), or legacy SLSQP with physics-based nonlinear shooting
 - **Grow profiles & goals** — per-location grow profiles with strategy (precision/balanced/efficiency), growth phases, and metric goals with compliance scoring
 - **Ecosystem health scoring** — weighted goal compliance with strategy-adjusted tolerances, per-metric breakdowns, and historical tracking
 - **Derived metrics** — computed sensors: VPD (Tetens equation), dry-back rate (linear regression), DLI (trapezoidal integration)
@@ -544,6 +544,7 @@ flowchart TB
 | `/api/cortex/goals/:id` | PUT/DELETE | Update or delete a goal |
 | `/api/cortex/health/:location` | GET | Ecosystem health snapshots (`sinceMs`, `untilMs`) |
 | `/api/cortex/effects` | GET | Learned actuator effect profiles (`deviceId`, `actuator`, `minSamples`) |
+| `/api/cortex/room-config` | GET | Room configuration (YAML as JSON, or `configured: false`) |
 | `/api/chat/stream` | POST | Streaming chat (SSE) |
 | `/api/voice/transcribe` | POST | Audio → Text (Vosk STT) |
 | `/api/voice/synthesize` | POST | Text → Audio (Kokoro TTS) |
@@ -564,7 +565,7 @@ Message Types:
 - **Purpose:** React SPA for visualizing telemetry data
 - **Technology:** React + Vite + TypeScript + Tailwind CSS
 - **Port:** `5173`
-- **Routing:** `react-router-dom` — `/` (Dashboard), `/nerve-center` (Nerve Center)
+- **Routing:** `react-router-dom` — `/` (Home), `/devices` (Devices), `/nerve-center` (Nerve Center)
 - **Features:**
   - Real-time metric cards with circular gauges
   - Time-series charts (Chart.js)
@@ -572,20 +573,22 @@ Message Types:
   - Drag-and-drop device panel reordering (persisted)
   - AI status indicator and activity feed (slide-out drawer)
   - Human observation logging (mold, pests, wilting, etc.) via Activity Center
+  - Nerve Center with 3 tabs: Overview (health score, active profile, goal count), Goals (profile selector + goal CRUD with phase filtering), Room (read-only room config display)
   - Voice command input
   - Responsive design with container queries
 
 ## AI Prefrontal
 
-Cortex uses Model Predictive Control (MPC) to autonomously monitor sensor readings and compute optimal actuator control.
+Cortex uses Model Predictive Control (MPC) to autonomously monitor sensor readings and compute optimal actuator control. Two solver modes are available, selected via `MPC_MODE` environment variable.
 
 ### How It Works
 
-1. **MPC Control** - The `MPCPlanner` uses `scipy.optimize.minimize` (SLSQP) with direct nonlinear shooting over a rolling horizon. The physics engine (`PhysicsEngine` or `FastPhysicsEngine`) serves as the prediction model, and the optimizer finds actuator intensities that minimize goal deviation + energy + rate-of-change
-2. **Grow Profiles & Goals** - Per-location grow profiles define strategy (precision/balanced/efficiency) and growth phase; metric goals set target ranges with tolerance and priority weights
-3. **Ecosystem Health** - `EcosystemHealthScorer` computes weighted compliance across all goals with strategy-adjusted tolerances; derived metrics (VPD, dry-back rate, DLI) are computed from raw sensor data
-4. **Direct MQTT** - MPC subscribes to telemetry and publishes commands directly
-5. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
+1. **MPC Control (OSQP)** — `MPC_MODE=osqp` — A 7-state thermodynamic model (T_air, humidity, CO2, T_leaf, substrate moisture, T_supply, T_wall) is linearized at each step and solved as a convex QP via OSQP with warm-starting. An Extended Kalman Filter fuses sensor data (handling missing sensors gracefully). Phase-dependent reference trajectories (veg, early/mid/late flower, dry) with day/night targets drive the controller. Sub-100ms solve times with variable scaling. Fail-safe graceful degradation (MPC_NORMAL → MPC_HOLD → MPC_OFFLINE) ensures safe operation even if the solver fails.
+2. **MPC Control (SLSQP)** — `MPC_MODE=slsqp` (default) — The legacy `MPCPlanner` uses `scipy.optimize.minimize` (SLSQP) with direct nonlinear shooting over a rolling horizon. The physics engine (`PhysicsEngine` or `FastPhysicsEngine`) serves as the prediction model, and the optimizer finds actuator intensities that minimize goal deviation + energy + rate-of-change
+3. **Grow Profiles & Goals** - Per-location grow profiles define strategy (precision/balanced/efficiency) and growth phase; metric goals set target ranges with tolerance and priority weights
+4. **Ecosystem Health** - `EcosystemHealthScorer` computes weighted compliance across all goals with strategy-adjusted tolerances; derived metrics (VPD, dry-back rate, DLI) are computed from raw sensor data
+5. **Direct MQTT** - MPC subscribes to telemetry and publishes commands directly
+6. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
 
 ### Command Flow
 
@@ -652,7 +655,7 @@ cd apps/cortex
 pytest tests/ -m "not e2e" -v
 ```
 
-Covers: `cortex_api.py` (status, profiles, goals endpoints), `derived_metrics.py` (VPD calculation, dry-back rate, DLI integration), `ecosystem_health.py` (health scoring, strategy tolerance, goal compliance), `grow_profiles.py` (profile/goal CRUD, phase validation), `data_reader.py` (Redis+SQLite merge, deduplication), `observations.py` (endpoint validation, storage, broadcast), `sensor_values.py` (EAV table CRUD, bucketed queries, migration), `sensor_meta.py` (sensor type resolution, unit/label helpers), `chat_session.py` (session store, TTL expiration), `state_planner.py` (MPCConfig, GoalSpec, cost functions, solver convergence, warm start), `simulation_mpc.py` (MPC runner, diagnostics, energy tracking, compliance, chart generation), `simulation_multi_day.py` (ambient schedule, multi-day runner, convergence), `fast_physics.py` (SVP lookup, psychrometrics, direction tests, benchmarks), `fast_physics_mpc.py` (MPC with FastPhysicsEngine), `duct_physics.py` (system resistance, fan operating point, ACH), `substrate_physics.py` (presets, geometry, evap modifier, stress), `room_config.py` (YAML loading, validation, ventilation/substrate parsing).
+Covers: `cortex_api.py` (status, profiles, goals, room-config endpoints), `derived_metrics.py` (VPD calculation, dry-back rate, DLI integration), `ecosystem_health.py` (health scoring, strategy tolerance, goal compliance), `grow_profiles.py` (profile/goal CRUD, phase validation), `data_reader.py` (Redis+SQLite merge, deduplication), `observations.py` (endpoint validation, storage, broadcast), `sensor_values.py` (EAV table CRUD, bucketed queries, migration), `sensor_meta.py` (sensor type resolution, unit/label helpers), `chat_session.py` (session store, TTL expiration), `mpc_model.py` (7-state thermodynamic model, SVP, humidity, dynamics, linearization), `mpc_solver.py` (OSQP solver feasibility, bounds, timing <100ms, warm-start), `estimator.py` (EKF predict/update, missing sensors, covariance stability), `compliance.py` (ring buffer, in/out-of-band tracking, RMSE, dryback rate), `failsafe.py` (state transitions, recovery, safe defaults), `state_planner.py` (MPCConfig, GoalSpec, cost functions, solver convergence, warm start), `simulation_mpc.py` (MPC runner, diagnostics, energy tracking, compliance, chart generation), `simulation_multi_day.py` (ambient schedule, multi-day runner, convergence), `fast_physics.py` (SVP lookup, psychrometrics, direction tests, benchmarks), `fast_physics_mpc.py` (MPC with FastPhysicsEngine), `duct_physics.py` (system resistance, fan operating point, ACH), `substrate_physics.py` (presets, geometry, evap modifier, stress), `room_config.py` (YAML loading, validation, ventilation/substrate parsing).
 
 #### Grow Tent Simulation (offline, no external services)
 ```bash

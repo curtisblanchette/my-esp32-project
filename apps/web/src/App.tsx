@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
 
-import { fetchLatest, resolveAdjustment, runRuleAdvisor, type LatestReading, type Command, type DeviceEvent, type Device, type RuleSuggestion, type CortexRule, RelayStatus } from './api';
+import { fetchLatest, type LatestReading, type Command, type DeviceEvent, type Device, RelayStatus } from './api';
 import { ActivityCenter, type ErrorItem } from "./components/ActivityCenter";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { Home } from "./pages/Home";
@@ -22,8 +22,6 @@ export function App(): React.ReactElement {
   const [commands, setCommands] = useState<Command[]>([]);
   const [events, setEvents] = useState<DeviceEvent[]>([]);
   const [errors, setErrors] = useState<ErrorItem[]>([]);
-  const [suggestions, setSuggestions] = useState<RuleSuggestion[]>([]);
-  const [rules, setRules] = useState<CortexRule[]>([]);
   const [wsRelayUpdates, setWsRelayUpdates] = useState<RelayStatus[] | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [unseenCount, setUnseenCount] = useState(0);
@@ -36,35 +34,12 @@ export function App(): React.ReactElement {
       message,
       source,
     };
-    setErrors((prev) => [error, ...prev].slice(0, 20)); // Keep last 20 errors
-  }, []);
-
-  const handleRunAdvisor = useCallback(async () => {
-    try {
-      await runRuleAdvisor();
-    } catch (err) {
-      addError("Failed to run rule advisor", "Cortex");
-    }
-  }, [addError]);
-
-  const handleResolveAdjustment = useCallback(async (id: string, action: "approve" | "reject") => {
-    const ok = await resolveAdjustment(id, action);
-    if (ok) {
-      // Optimistic update — WS broadcast will confirm
-      setSuggestions((prev) =>
-        prev.map((s) =>
-          s.id === id
-            ? { ...s, status: action === "approve" ? "applied" as const : "rejected" as const, resolvedAt: Date.now() }
-            : s
-        )
-      );
-    }
+    setErrors((prev) => [error, ...prev].slice(0, 20));
   }, []);
 
   // WebSocket connection for real-time updates
   const { isConnected } = useWebSocket({
     onLatestReading: (reading) => {
-      // Store per-device latest readings
       if (reading.deviceId) {
         setLatestByDevice((prev) => ({
           ...prev,
@@ -84,14 +59,12 @@ export function App(): React.ReactElement {
     },
     onEventReceived: (event) => {
       setEvents((prev) => [event, ...prev.filter((e) => e.id !== event.id)].slice(0, 20));
-      // Sync relay state and update command status from command_ack events
       if (event.eventType === "command_ack" && event.data) {
         const { correlationId, status, actualValue } = event.data as {
           correlationId?: string;
           status?: string;
           actualValue?: boolean;
         };
-        // Update the matching command's status so Recent Activity shows the ACK
         if (correlationId && status) {
           setCommands((prev) =>
             prev.map((cmd) =>
@@ -117,12 +90,6 @@ export function App(): React.ReactElement {
         return [command, ...prev].slice(0, 20);
       });
     },
-    onSuggestionsUpdate: (suggestionList) => {
-      setSuggestions(suggestionList);
-    },
-    onRulesUpdate: (ruleList) => {
-      setRules(ruleList);
-    },
   });
 
   // Fetch initial latest reading on mount (retries while Cortex starts up)
@@ -142,7 +109,7 @@ export function App(): React.ReactElement {
               [l.deviceId!]: l,
             }));
           }
-          return; // success
+          return;
         } catch (error) {
           if (error instanceof Error && error.name === "AbortError") return;
           attempt++;
@@ -150,7 +117,6 @@ export function App(): React.ReactElement {
             console.error("Failed to fetch initial data after retries:", error);
             addError("Failed to fetch initial data", "API");
           } else {
-            // Wait with backoff before retrying (2s, 4s, 6s, ...)
             await new Promise((r) => setTimeout(r, baseDelay * attempt));
           }
         }
@@ -173,10 +139,10 @@ export function App(): React.ReactElement {
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const totalActivityCount = commands.length + events.length + errors.length + suggestions.length;
+  const totalActivityCount = commands.length + events.length + errors.length;
   const hasActivity = totalActivityCount > 0;
 
-  // Track unseen activity — mark seen when drawer opens, count new items when closed
+  // Track unseen activity
   useEffect(() => {
     if (drawerOpen) {
       lastSeenCountRef.current = totalActivityCount;
@@ -274,11 +240,6 @@ export function App(): React.ReactElement {
           element={
             <NerveCenter
               devices={devices}
-              suggestions={suggestions}
-              rules={rules}
-              setRules={setRules}
-              onResolveAdjustment={handleResolveAdjustment}
-              onRunAdvisor={handleRunAdvisor}
               addError={addError}
             />
           }
@@ -301,7 +262,7 @@ export function App(): React.ReactElement {
         <div className="relative flex-1 min-h-0">
           <div className="h-full overflow-y-auto overflow-x-hidden pt-4 px-5 pb-32">
             {hasActivity ? (
-              <ActivityCenter commands={commands} events={events} errors={errors} suggestions={suggestions} onResolveAdjustment={handleResolveAdjustment} maxItems={20} />
+              <ActivityCenter commands={commands} events={events} errors={errors} maxItems={20} />
             ) : (
               <div className="text-sm opacity-60">No recent activity</div>
             )}

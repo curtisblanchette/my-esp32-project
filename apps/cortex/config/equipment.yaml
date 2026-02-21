@@ -1,0 +1,52 @@
+# Equipment specifications for the MPC controller.
+# HVAC, dehumidifier, humidifier, CO2, fans, and irrigation specs.
+
+hvac:
+  type: "mini_split"
+  cooling_capacity_w: 3500       # BTU/h ≈ 1025 W (effective cooling)
+  heating_capacity_w: 3000
+  cop: 3.5                       # Coefficient of Performance
+  tau_seconds: 60                # First-order time constant (DX system)
+  supply_temp_cool_c: 12.0
+  supply_temp_heat_c: 40.0
+  max_supply_flow_kg_s: 0.1     # Supply air mass flow at full fan
+  condensate_coeff: 0.05         # g/s per unit cooling × humidity
+
+dehumidifier:
+  capacity_g_s: 0.2             # Moisture removal rate at full power (g/s)
+  max_watts: 300
+  control_type: "binary"
+
+humidifier:
+  type: "ultrasonic"
+  capacity_g_s: 0.08            # Moisture addition rate at full power (g/s)
+  max_watts: 30
+  control_type: "binary"
+
+co2_injector:
+  type: "compressed_tank"
+  inject_rate_ppm_min: 50       # PPM/min at full flow (volume-normalized)
+  max_watts: 10
+  control_type: "binary"         # Solenoid valve (on/off)
+  fail_safe: "normally_closed"
+
+fans:
+  circulation:
+    max_watts: 45
+    control_type: "binary"
+  exhaust:
+    max_watts: 85
+    control_type: "variable"     # VFD or PWM
+    min_speed: 0.2               # Minimum 20% for airflow
+
+irrigation:
+  type: "drip"
+  flow_rate_m3_s: 0.001         # When valve is open
+  control_type: "binary"         # Solenoid valve
+  fail_safe: "normally_closed"
+
+lighting:
+  type: "LED"
+  max_watts: 480
+  par_efficiency: 0.40           # 40% of power → PAR, 60% → heat
+  max_ppfd: 1000                 # µmol/m²/s at full intensity

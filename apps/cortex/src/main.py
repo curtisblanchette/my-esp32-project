@@ -23,7 +23,7 @@ from pathlib import Path
 
 import uvicorn
 
-from .config import RULES_PATH, HTTP_PORT, SQLITE_PATH, SQLITE_JOURNAL_MODE, REDIS_URL, ROOM_CONFIG_PATH
+from .config import RULES_PATH, HTTP_PORT, SQLITE_PATH, SQLITE_JOURNAL_MODE, REDIS_URL, ROOM_CONFIG_PATH, MPC_MODE, MPC_PHASE, MPC_CONFIG_PATH
 from .models.telemetry import TelemetryMessage
 from .models.command import Command, CommandAck
 from .services.mqtt_client import MqttService
@@ -125,8 +125,25 @@ class Orchestrator:
         app.state.chat_session_store = self._chat_session_store
         logger.info("ChatSessionStore initialized")
 
-        # MPC Controller (requires ROOM_CONFIG_PATH)
-        if ROOM_CONFIG_PATH:
+        # MPC Controller
+        if MPC_MODE == "osqp":
+            # New OSQP-based MPC (no ROOM_CONFIG_PATH needed)
+            try:
+                from .services.mpc_controller import MPCController
+                self._mpc_controller = MPCController(
+                    mqtt_client=None,  # set after MQTT init
+                    location=os.environ.get("DEFAULT_LOCATION", "room1"),
+                    device_id=os.environ.get("DEFAULT_DEVICE_ID", "esp32-1"),
+                    mode="osqp",
+                    phase=MPC_PHASE,
+                    config_path=MPC_CONFIG_PATH,
+                )
+                logger.info(f"OSQP MPC Controller initialized (phase={MPC_PHASE})")
+            except Exception as e:
+                logger.error(f"Failed to initialize OSQP MPC controller: {e}")
+                self._mpc_controller = None
+        elif ROOM_CONFIG_PATH:
+            # Legacy SLSQP-based MPC (requires ROOM_CONFIG_PATH)
             try:
                 from .services.mpc_controller import MPCController
                 from simulations.room_config import load_room_config
@@ -147,8 +164,9 @@ class Orchestrator:
                     mqtt_client=None,  # set after MQTT init
                     location=os.environ.get("DEFAULT_LOCATION", "room1"),
                     device_id=os.environ.get("DEFAULT_DEVICE_ID", "esp32-1"),
+                    mode="slsqp",
                 )
-                logger.info(f"MPC Controller initialized from {ROOM_CONFIG_PATH} with {len(mpc_goals)} goals")
+                logger.info(f"SLSQP MPC Controller initialized from {ROOM_CONFIG_PATH} with {len(mpc_goals)} goals")
             except Exception as e:
                 logger.error(f"Failed to initialize MPC controller: {e}")
                 self._mpc_controller = None

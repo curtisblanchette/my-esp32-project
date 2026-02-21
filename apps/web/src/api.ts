@@ -234,22 +234,14 @@ export async function logObservation(args: {
 }
 
 // Chat types
-export type ProposedRule = {
-  name: string;
-  description: string;
-  condition: Record<string, unknown>;
-  action: Record<string, unknown>;
-};
-
 export type ChatResponse = {
   ok: boolean;
   reply: string;
   action?: {
-    type: "command" | "query" | "none" | "proposed_rules" | "rules_activated";
+    type: "command" | "query" | "none";
     target?: string;
     sensor?: string;
     value?: boolean | number | string;
-    rules?: ProposedRule[];
     count?: number;
     location?: string;
     goal?: string;
@@ -382,172 +374,186 @@ export async function synthesizeSpeech(text: string): Promise<Blob> {
 
 export type CortexStatus = {
   ok: boolean;
-  outcomes: { total: number; avgEffectiveness: number; successRate: number };
-  baselines: { total: number; sensorsTracked: number };
-  suggestions: { pending: number; applied: number; rejected: number; total: number };
-  lastAdvisorRun: number | null;
 };
 
-export type RuleSuggestion = {
+// ── Grow Profiles & Goals ─────────────────────────────────────────
+
+export type GrowProfile = {
   id: string;
+  location: string;
+  name: string;
+  strategy: "precision" | "balanced" | "efficiency";
+  phase: string | null;
+  phaseStart: string | null;
+  active: boolean;
   createdAt: number;
-  ruleName: string;
-  field: string;
-  currentValue: string;
-  suggestedValue: string;
-  reason: string;
-  confidence: number;
-  status: "pending" | "approved" | "rejected" | "applied";
-  resolvedAt: number | null;
-  outcomeSampleCount: number;
-  observationContext: string | null;
+  updatedAt: number;
 };
 
-export type DeviceBaseline = {
-  deviceId: string;
+export type GrowGoal = {
+  id: string;
+  profileId: string;
   metric: string;
-  hour: number;
-  avg: number;
-  stdDev: number;
-  sampleCount: number;
+  metricType: "sensor" | "derived" | "relay_schedule";
+  phase: string | null;
+  rangeMin: number | null;
+  rangeMax: number | null;
+  tolerance: number;
+  priority: number;
+  schedule: Record<string, unknown> | null;
+  timeWindow: { onHour: number; offHour: number } | null;
+  createdAt: number;
+  updatedAt: number;
 };
+
+export type HealthSnapshot = {
+  location: string;
+  ts: number;
+  score: number;
+  detail: Record<string, unknown>;
+};
+
+export type RoomConfig = Record<string, unknown>;
 
 export async function fetchCortexStatus(signal?: AbortSignal): Promise<CortexStatus> {
   const r = await fetch("/api/cortex/status", { cache: "no-store", signal });
   return (await r.json()) as CortexStatus;
 }
 
-export async function fetchAdjustments(
-  status?: string,
-  signal?: AbortSignal,
-): Promise<RuleSuggestion[]> {
-  const url = status
-    ? `/api/cortex/adjustments?status=${encodeURIComponent(status)}`
-    : "/api/cortex/adjustments";
-  const r = await fetch(url, { cache: "no-store", signal });
-  const data = (await r.json()) as { ok: boolean; adjustments: RuleSuggestion[] };
-  return Array.isArray(data.adjustments) ? data.adjustments : [];
+// ── Profiles ─────────────────────────────────────────────────────
+
+export async function fetchProfiles(signal?: AbortSignal): Promise<GrowProfile[]> {
+  const r = await fetch("/api/cortex/profiles", { cache: "no-store", signal });
+  const data = (await r.json()) as { ok: boolean; profiles: GrowProfile[] };
+  return Array.isArray(data.profiles) ? data.profiles : [];
 }
 
-export async function fetchDeviceBaselines(
-  deviceId: string,
-  signal?: AbortSignal,
-): Promise<DeviceBaseline[]> {
-  const r = await fetch(`/api/cortex/baselines/${encodeURIComponent(deviceId)}`, {
-    cache: "no-store",
-    signal,
-  });
-  const data = (await r.json()) as { ok: boolean; baselines: DeviceBaseline[] };
-  return Array.isArray(data.baselines) ? data.baselines : [];
-}
-
-export async function runRuleAdvisor(): Promise<{ ok: boolean; count: number }> {
-  const r = await fetch("/api/cortex/advisor/run", { method: "POST" });
-  return (await r.json()) as { ok: boolean; count: number };
-}
-
-export async function resolveAdjustment(
-  id: string,
-  action: "approve" | "reject",
-): Promise<boolean> {
-  const r = await fetch(`/api/cortex/adjustments/${encodeURIComponent(id)}`, {
+export async function createProfile(body: {
+  location: string;
+  name: string;
+  strategy?: string;
+  phase?: string;
+  phaseStart?: string;
+}): Promise<{ ok: boolean; profile?: GrowProfile; error?: string }> {
+  const r = await fetch("/api/cortex/profiles", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action }),
+    body: JSON.stringify(body),
   });
-  const data = (await r.json()) as { ok: boolean };
-  return data.ok;
+  return (await r.json()) as { ok: boolean; profile?: GrowProfile; error?: string };
 }
 
-// ── Cortex Rules API (Phase 6: Nerve Center) ────────────────────────
-
-export type CortexRule = {
-  id: string;
-  name: string;
-  description: string;
-  enabled: boolean;
-  condition: {
-    sensor: string;
-    operator: string;
-    threshold: number;
-    duration_seconds?: number;
-    trend?: string | null;
-    trend_window_minutes?: number;
-    time_of_day?: { after: string; before: string } | null;
-    forecast?: string | null;
-    forecast_threshold?: number | null;
-    forecast_within_minutes?: number;
-    baseline_deviation?: number | null;
-    scope?: string;
-  };
-  action: {
-    target: string;
-    action: string;
-    value: boolean | number | string;
-    reason: string;
-    target_scope?: string;
-  };
-  source: "yaml" | "user" | "generated";
-  modified: boolean;
-  createdAt: number;
-  updatedAt: number;
-};
-
-export async function fetchRules(signal?: AbortSignal): Promise<CortexRule[]> {
-  const r = await fetch("/api/cortex/rules", { cache: "no-store", signal });
-  const data = (await r.json()) as { ok: boolean; rules: CortexRule[] };
-  return Array.isArray(data.rules) ? data.rules : [];
-}
-
-export async function toggleRule(id: string, enabled: boolean): Promise<boolean> {
-  const r = await fetch(`/api/cortex/rules/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
-  });
-  const data = (await r.json()) as { ok: boolean };
-  return data.ok;
-}
-
-export async function createRule(rule: {
-  name: string;
-  description: string;
-  condition: CortexRule["condition"];
-  action: CortexRule["action"];
-  enabled?: boolean;
-}): Promise<{ ok: boolean; rule?: CortexRule; error?: string }> {
-  const r = await fetch("/api/cortex/rules", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(rule),
-  });
-  return (await r.json()) as { ok: boolean; rule?: CortexRule; error?: string };
-}
-
-export async function updateRule(
+export async function updateProfile(
   id: string,
-  rule: {
-    name: string;
-    description: string;
-    condition: CortexRule["condition"];
-    action: CortexRule["action"];
-    enabled?: boolean;
-  },
-): Promise<{ ok: boolean; rule?: CortexRule; error?: string }> {
-  const r = await fetch(`/api/cortex/rules/${encodeURIComponent(id)}`, {
+  body: Partial<Pick<GrowProfile, "name" | "strategy" | "phase" | "phaseStart" | "active">>,
+): Promise<{ ok: boolean; profile?: GrowProfile; error?: string }> {
+  const r = await fetch(`/api/cortex/profiles/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(rule),
+    body: JSON.stringify(body),
   });
-  return (await r.json()) as { ok: boolean; rule?: CortexRule; error?: string };
+  return (await r.json()) as { ok: boolean; profile?: GrowProfile; error?: string };
 }
 
-export async function deleteRule(id: string): Promise<boolean> {
-  const r = await fetch(`/api/cortex/rules/${encodeURIComponent(id)}`, {
+export async function deleteProfile(id: string): Promise<boolean> {
+  const r = await fetch(`/api/cortex/profiles/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
   const data = (await r.json()) as { ok: boolean };
   return data.ok;
+}
+
+// ── Goals ─────────────────────────────────────────────────────────
+
+export async function fetchGoals(
+  profileId: string,
+  phase?: string,
+  signal?: AbortSignal,
+): Promise<GrowGoal[]> {
+  let url = `/api/cortex/profiles/${encodeURIComponent(profileId)}/goals`;
+  if (phase) url += `?phase=${encodeURIComponent(phase)}`;
+  const r = await fetch(url, { cache: "no-store", signal });
+  const data = (await r.json()) as { ok: boolean; goals: GrowGoal[] };
+  return Array.isArray(data.goals) ? data.goals : [];
+}
+
+export async function createGoal(
+  profileId: string,
+  body: {
+    metric: string;
+    metricType?: string;
+    phase?: string;
+    rangeMin?: number;
+    rangeMax?: number;
+    tolerance?: number;
+    priority?: number;
+    schedule?: Record<string, unknown>;
+    timeWindow?: { onHour: number; offHour: number };
+  },
+): Promise<{ ok: boolean; goal?: GrowGoal; error?: string }> {
+  const r = await fetch(`/api/cortex/profiles/${encodeURIComponent(profileId)}/goals`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return (await r.json()) as { ok: boolean; goal?: GrowGoal; error?: string };
+}
+
+export async function updateGoal(
+  id: string,
+  body: {
+    metric: string;
+    metricType?: string;
+    phase?: string;
+    rangeMin?: number;
+    rangeMax?: number;
+    tolerance?: number;
+    priority?: number;
+    schedule?: Record<string, unknown>;
+    timeWindow?: { onHour: number; offHour: number } | null;
+  },
+): Promise<{ ok: boolean; goal?: GrowGoal; error?: string }> {
+  const r = await fetch(`/api/cortex/goals/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return (await r.json()) as { ok: boolean; goal?: GrowGoal; error?: string };
+}
+
+export async function deleteGoal(id: string): Promise<boolean> {
+  const r = await fetch(`/api/cortex/goals/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  const data = (await r.json()) as { ok: boolean };
+  return data.ok;
+}
+
+// ── Health ─────────────────────────────────────────────────────────
+
+export async function fetchHealth(
+  location: string,
+  sinceMs?: number,
+  signal?: AbortSignal,
+): Promise<{ latest: HealthSnapshot | null; history: HealthSnapshot[] }> {
+  const params = new URLSearchParams();
+  if (sinceMs) params.set("sinceMs", String(sinceMs));
+  const r = await fetch(`/api/cortex/health/${encodeURIComponent(location)}?${params}`, {
+    cache: "no-store",
+    signal,
+  });
+  const data = (await r.json()) as { ok: boolean; latest: HealthSnapshot | null; history: HealthSnapshot[] };
+  return { latest: data.latest ?? null, history: Array.isArray(data.history) ? data.history : [] };
+}
+
+// ── Room Config ───────────────────────────────────────────────────
+
+export async function fetchRoomConfig(
+  signal?: AbortSignal,
+): Promise<{ configured: boolean; config: RoomConfig | null }> {
+  const r = await fetch("/api/cortex/room-config", { cache: "no-store", signal });
+  const data = (await r.json()) as { ok: boolean; configured: boolean; config: RoomConfig | null };
+  return { configured: data.configured, config: data.config };
 }
 
 // Device capability helpers

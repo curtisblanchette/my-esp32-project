@@ -1,0 +1,16 @@
+# Early flower phase target setpoints
+day:
+  vpd: 1.0
+  t_air: 26.0
+  rh: 55.0
+  co2: 1200.0
+  dryback_rate: -0.012
+  theta: 0.36
+
+night:
+  vpd: 0.7
+  t_air: 22.0
+  rh: 60.0
+  co2: 420.0
+  dryback_rate: -0.005
+  theta: 0.36

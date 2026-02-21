@@ -1,117 +1,122 @@
-import React, { useState } from "react";
-import type { CortexStatus, CortexRule, RuleSuggestion } from "../api";
+import React, { useEffect, useState } from "react";
+import { fetchHealth, fetchGoals, type GrowProfile, type HealthSnapshot } from "../api";
 
 type OverviewProps = {
-  status: CortexStatus | null;
-  rules: CortexRule[];
-  suggestions: RuleSuggestion[];
-  onRunAdvisor: () => Promise<void>;
-  onTabChange: (tab: "overview" | "rules" | "suggestions" | "baselines") => void;
+  profiles: GrowProfile[];
+  onTabChange: (tab: "overview" | "goals" | "room") => void;
 };
 
-function formatTime(ts: number): string {
-  const date = new Date(ts);
-  const now = Date.now();
-  const diff = now - ts;
+const STRATEGY_COLORS: Record<string, string> = {
+  precision: "bg-red-500/20 text-red-400 border-red-500/30",
+  balanced: "bg-blue-500/20 text-blue-400 border-blue-500/30",
+  efficiency: "bg-green-500/20 text-green-400 border-green-500/30",
+};
 
-  if (diff < 60_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+const PHASE_COLORS: Record<string, string> = {
+  seedling: "bg-lime-500/20 text-lime-400 border-lime-500/30",
+  veg: "bg-emerald-500/20 text-emerald-400 border-emerald-500/30",
+  flower: "bg-purple-500/20 text-purple-400 border-purple-500/30",
+  late_flower: "bg-amber-500/20 text-amber-400 border-amber-500/30",
+  dry: "bg-stone-500/20 text-stone-400 border-stone-500/30",
+  cure: "bg-cyan-500/20 text-cyan-400 border-cyan-500/30",
+};
+
+function healthColor(score: number): string {
+  if (score >= 80) return "text-green-400";
+  if (score >= 50) return "text-yellow-400";
+  return "text-red-400";
 }
 
-function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }): React.ReactElement {
+function daysInPhase(phaseStart: string | null): string {
+  if (!phaseStart) return "--";
+  const start = new Date(phaseStart).getTime();
+  const days = Math.floor((Date.now() - start) / 86_400_000);
+  return `${days}d`;
+}
+
+function StatCard({ label, children }: { label: string; children: React.ReactNode }): React.ReactElement {
   return (
-    <div className="rounded-xl border border-panel-border bg-panel/30 backdrop-blur-[6px] p-4 flex-1 min-w-[140px]">
-      <div className="text-xs opacity-50 mb-1">{label}</div>
-      <div className={`text-2xl font-semibold ${color || "text-white"}`}>{value}</div>
-      {sub && <div className="text-xs opacity-40 mt-0.5">{sub}</div>}
+    <div className="rounded-xl border border-panel-border bg-panel/30 backdrop-blur-[6px] p-4 flex-1 min-w-[200px]">
+      <div className="text-xs opacity-50 mb-2">{label}</div>
+      {children}
     </div>
   );
 }
 
-export function NerveCenterOverview({ status, rules, suggestions, onRunAdvisor, onTabChange }: OverviewProps): React.ReactElement {
-  const [advisorRunning, setAdvisorRunning] = useState(false);
+export function NerveCenterOverview({ profiles, onTabChange }: OverviewProps): React.ReactElement {
+  const [health, setHealth] = useState<HealthSnapshot | null>(null);
+  const [goalCount, setGoalCount] = useState<number>(0);
 
-  const enabledRules = rules.filter((r) => r.enabled).length;
-  const modifiedRules = rules.filter((r) => r.modified).length;
-  const pendingSuggestions = suggestions.filter((s) => s.status === "pending").length;
+  const activeProfile = profiles.find((p) => p.active) ?? profiles[0] ?? null;
 
-  const avgEff = status?.outcomes.avgEffectiveness ?? 0;
-  const effColor = avgEff > 0.5 ? "text-green-400" : avgEff > 0 ? "text-yellow-400" : "text-red-400";
+  useEffect(() => {
+    if (!activeProfile) return;
+    const controller = new AbortController();
+
+    async function load() {
+      const [healthResult, goals] = await Promise.allSettled([
+        fetchHealth(activeProfile!.location, undefined, controller.signal),
+        fetchGoals(activeProfile!.id, undefined, controller.signal),
+      ]);
+      if (controller.signal.aborted) return;
+      if (healthResult.status === "fulfilled") setHealth(healthResult.value.latest);
+      if (goals.status === "fulfilled") setGoalCount(goals.value.length);
+    }
+
+    load();
+    return () => controller.abort();
+  }, [activeProfile?.id, activeProfile?.location]);
+
+  if (!activeProfile) {
+    return (
+      <div className="text-sm opacity-50 text-center py-12">
+        No profiles configured. Go to the Goals tab to create one.
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-5">
-      {/* Stat cards */}
-      <div className="flex flex-wrap gap-3">
-        <StatCard
-          label="Effectiveness"
-          value={status ? `${(avgEff * 100).toFixed(0)}%` : "--"}
-          sub={status ? `${status.outcomes.total} outcomes, ${(status.outcomes.successRate * 100).toFixed(0)}% success` : undefined}
-          color={effColor}
-        />
-        <StatCard
-          label="Baselines"
-          value={status?.baselines.total ?? "--"}
-          sub={status ? `${status.baselines.sensorsTracked} sensors tracked` : undefined}
-        />
-        <StatCard
-          label="Rules Active"
-          value={`${enabledRules}/${rules.length}`}
-          sub={modifiedRules > 0 ? `${modifiedRules} modified by advisor` : undefined}
-        />
-      </div>
-
-      {/* Suggestions + Advisor */}
-      <div className="rounded-xl border border-panel-border bg-panel/30 backdrop-blur-[6px] p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm font-medium">Rule Advisor</div>
-            <div className="text-xs opacity-40 mt-0.5">
-              {status?.lastAdvisorRun
-                ? `Last run: ${formatTime(status.lastAdvisorRun)}`
-                : "Never run"}
-            </div>
-          </div>
-          <button
-            onClick={async () => {
-              setAdvisorRunning(true);
-              try { await onRunAdvisor(); } finally { setAdvisorRunning(false); }
-            }}
-            disabled={advisorRunning}
-            className="flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg border border-teal-500/30 bg-teal-500/10 text-teal-400 hover:bg-teal-500/20 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
-          >
-            {advisorRunning ? (
-              <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            ) : (
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-              </svg>
-            )}
-            {advisorRunning ? "Running..." : "Run Now"}
-          </button>
+    <div className="flex flex-wrap gap-3">
+      {/* Health Score */}
+      <StatCard label="Health Score">
+        <div className={`text-3xl font-bold ${health ? healthColor(health.score) : "text-white/30"}`}>
+          {health ? Math.round(health.score) : "--"}
         </div>
-
-        {/* Suggestion summary */}
-        <div className="flex items-center gap-3 text-xs">
-          <span className="opacity-50">Suggestions:</span>
-          <span className="px-1.5 py-0.5 rounded bg-teal-500/20 text-teal-400">{pendingSuggestions} pending</span>
-          <span className="px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">{status?.suggestions.applied ?? 0} applied</span>
-          <span className="px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">{status?.suggestions.rejected ?? 0} rejected</span>
+        <div className="text-xs opacity-40 mt-0.5">
+          {health ? `as of ${new Date(health.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "No data yet"}
         </div>
+      </StatCard>
 
-        {pendingSuggestions > 0 && (
-          <button
-            onClick={() => onTabChange("suggestions")}
-            className="text-xs text-teal-400 hover:text-teal-300 cursor-pointer transition-colors"
-          >
-            View {pendingSuggestions} pending suggestion{pendingSuggestions !== 1 ? "s" : ""}
-          </button>
-        )}
-      </div>
+      {/* Active Profile */}
+      <StatCard label="Active Profile">
+        <div className="text-lg font-semibold">{activeProfile.name}</div>
+        <div className="flex items-center gap-2 mt-1.5">
+          <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded border ${STRATEGY_COLORS[activeProfile.strategy] || ""}`}>
+            {activeProfile.strategy}
+          </span>
+          {activeProfile.phase && (
+            <span className={`px-1.5 py-0.5 text-[10px] font-medium rounded border ${PHASE_COLORS[activeProfile.phase] || ""}`}>
+              {activeProfile.phase}
+            </span>
+          )}
+          {activeProfile.phaseStart && (
+            <span className="text-[10px] opacity-40">
+              {daysInPhase(activeProfile.phaseStart)} in phase
+            </span>
+          )}
+        </div>
+      </StatCard>
+
+      {/* Goal Count */}
+      <StatCard label="Goals">
+        <div className="text-3xl font-bold">{goalCount}</div>
+        <button
+          onClick={() => onTabChange("goals")}
+          className="text-xs text-teal-400 hover:text-teal-300 cursor-pointer transition-colors mt-1"
+        >
+          Manage goals
+        </button>
+      </StatCard>
     </div>
   );
 }

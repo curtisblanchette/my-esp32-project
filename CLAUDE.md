@@ -9,14 +9,16 @@ IoT telemetry dashboard for ESP32 sensor monitoring with relay control.
 ```
 ESP32 (MicroPython) → MQTT → Cortex (Python/FastAPI) → Redis (HOT) + SQLite (COLD)
                          ↓                           → WebSocket → React Dashboard
-                   Rules Engine (trend + baseline context) + Ollama LLM
+                   MPC Control Plane (OSQP/SLSQP) + EKF State Estimation + Ollama LLM
                          ↓
                    MQTT Commands → ESP32
 ```
 
 ## Monorepo Structure
 
-- `apps/cortex/` — Python/FastAPI unified backend (REST API, WebSocket, MQTT, rules engine, voice, LLM)
+- `apps/cortex/` — Python/FastAPI unified backend (REST API, WebSocket, MQTT, MPC control, voice, LLM)
+- `apps/cortex/src/mpc/` — OSQP-based MPC: 7-state thermodynamic model, QP solver, EKF estimator, compliance tracker
+- `apps/cortex/src/control/` — Control loop infrastructure: sensor fusion, actuator interface, fail-safe manager
 - `apps/cortex/simulations/` — Environment simulation framework (physics engine, runner, charts, adaptive learning)
 - `apps/web/` — React/Vite dashboard with Chart.js visualizations
 - `device/` — MicroPython code for ESP32 sensors

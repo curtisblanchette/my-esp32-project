@@ -1,0 +1,16 @@
+# Late flower phase target setpoints
+day:
+  vpd: 1.3
+  t_air: 24.0
+  rh: 45.0
+  co2: 1000.0
+  dryback_rate: -0.018
+  theta: 0.30
+
+night:
+  vpd: 0.9
+  t_air: 20.0
+  rh: 50.0
+  co2: 420.0
+  dryback_rate: -0.010
+  theta: 0.30

@@ -1,15 +1,18 @@
 """
-Cortex intelligence API — grow profiles, goals, ecosystem health, and effects.
+Cortex intelligence API — grow profiles, goals, ecosystem health, effects, and room config.
 """
 
 import logging
 import sqlite3
 import time
 
+import yaml
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Any, TYPE_CHECKING
+
+from ..config import ROOM_CONFIG_PATH
 
 if TYPE_CHECKING:
     from ..services.sqlite_client import SqliteClient
@@ -213,5 +216,25 @@ def create_cortex_router(
             device_id=deviceId, actuator=actuator, min_samples=minSamples,
         )
         return {"ok": True, "effects": effects}
+
+    # ── Room Configuration ────────────────────────────────────────────
+
+    @r.get("/room-config")
+    async def get_room_config():
+        """Return the room configuration YAML as JSON."""
+        if not ROOM_CONFIG_PATH:
+            return {"ok": True, "configured": False, "config": None}
+        try:
+            with open(ROOM_CONFIG_PATH, "r") as f:
+                config = yaml.safe_load(f)
+            return {"ok": True, "configured": True, "config": config}
+        except FileNotFoundError:
+            return {"ok": True, "configured": False, "config": None}
+        except Exception as exc:
+            logger.error("Failed to load room config: %s", exc)
+            return JSONResponse(
+                status_code=500,
+                content={"ok": False, "error": f"Failed to load room config: {exc}"},
+            )
 
     return r

@@ -29,7 +29,10 @@ pytest tests/ -v            # All tests with verbose output
 - `OLLAMA_URL`, `OLLAMA_MODEL` — Local LLM config
 - `HTTP_PORT` — FastAPI server port (default: 8000)
 - `RULES_PATH` — Path to rules.yaml (LLM config)
-- `ROOM_CONFIG_PATH` — Path to room YAML for MPC
+- `ROOM_CONFIG_PATH` — Path to room YAML for legacy SLSQP MPC
+- `MPC_MODE` — MPC solver mode: `slsqp` (legacy, default) or `osqp` (convex QP)
+- `MPC_PHASE` — Growth phase for OSQP MPC (default: `mid_flower`). Options: `veg`, `early_flower`, `mid_flower`, `late_flower`, `dry`
+- `MPC_CONFIG_PATH` — Path to OSQP config directory (default: `config`)
 - `VOSK_MODEL_PATH` — Vosk STT model path
 - `KOKORO_MODEL_PATH`, `KOKORO_VOICES_PATH` — Kokoro TTS model paths
 - `KOKORO_VOICE`, `KOKORO_SPEED`, `KOKORO_LANG` — Kokoro TTS settings
@@ -38,9 +41,24 @@ pytest tests/ -v            # All tests with verbose output
 
 ### MPC Control
 
-The control plane uses Model Predictive Control (MPC) via `MPCPlanner` + `PhysicsEngine`:
-- `state_planner.py` — SLSQP optimizer with direct nonlinear shooting over a rolling horizon
-- `PhysicsEngine` / `FastPhysicsEngine` — physics-based grow environment model as prediction model
+Two MPC modes are available, selected via `MPC_MODE` env var:
+
+**OSQP mode** (`MPC_MODE=osqp`) — Convex QP with sub-100ms solve times:
+- `src/mpc/model.py` — 7-state thermodynamic model: [T_air, w_air, CO2, T_leaf, theta, T_supply, T_wall]
+- `src/mpc/solver.py` — OSQP convex QP solver with variable scaling, warm-starting, 30-step prediction horizon
+- `src/mpc/estimator.py` — Extended Kalman Filter with missing-sensor support
+- `src/mpc/reference.py` — Phase-dependent day/night reference trajectories from YAML configs
+- `src/mpc/constraints.py` — Actuator bounds, rate limits, mutual exclusion (heat/cool, hum/dehum)
+- `src/mpc/compliance.py` — Rolling compliance tracking with RMSE, target bands, dryback rate
+- `src/control/loop.py` — 1 Hz async control loop: EKF predict → update → solve → actuate
+- `src/control/failsafe.py` — Graceful degradation: MPC_NORMAL → MPC_HOLD → MPC_OFFLINE
+- `src/control/sensors.py` — Sensor fusion with staleness detection
+- `src/control/actuators.py` — MQTT actuator interface with deadband filtering
+- Phase configs in `config/phases/*.yaml`, equipment in `config/equipment.yaml`
+
+**SLSQP mode** (`MPC_MODE=slsqp`, default) — Legacy nonlinear shooting:
+- `simulations/state_planner.py` — SLSQP optimizer with direct nonlinear shooting over a rolling horizon
+- `simulations/physics.py` — PhysicsEngine / FastPhysicsEngine as prediction model
 - Cost function: weighted goal deviation + energy + actuator rate-of-change
 - Light/CO2 schedule constraints, warm-start between solves
 - See `simulations/CLAUDE.md` for full MPC and physics documentation
@@ -164,6 +182,9 @@ flowchart TB
 - `GET /api/cortex/health/:location` — Health snapshots (`?sinceMs=&untilMs=`)
 - `GET /api/cortex/effects` — Learned effect profiles (`?deviceId=&actuator=&minSamples=3`)
 
+**Room Configuration**
+- `GET /api/cortex/room-config` — Room YAML as JSON (`{configured, config}`)
+
 **Chat (NLP)**
 - `POST /api/chat` — Process natural language command
 - `POST /api/chat/stream` — Streaming chat response (SSE)
@@ -200,14 +221,24 @@ flowchart TB
 - `src/services/background_jobs.py` — Aggregation + command expiration periodic jobs
 - `src/services/derived_metrics.py` — VPD (Tetens), dry-back rate, DLI
 - `src/services/ecosystem_health.py` — Weighted goal compliance with strategy tolerance
-- `src/services/mpc_controller.py` — MPC controller integration
+- `src/services/mpc_controller.py` — Dual-mode MPC controller (OSQP or SLSQP)
+- `src/mpc/model.py` — 7-state grow room thermodynamic model with linearization
+- `src/mpc/solver.py` — OSQP QP solver with variable scaling and warm-starting
+- `src/mpc/estimator.py` — Extended Kalman Filter state estimator
+- `src/mpc/reference.py` — Phase-dependent reference trajectory generator
+- `src/mpc/constraints.py` — QP constraint builder (bounds, rates, mutual exclusion)
+- `src/mpc/compliance.py` — Rolling compliance tracker with RMSE and target bands
+- `src/control/loop.py` — 1 Hz async control loop (EKF + solve + actuate)
+- `src/control/failsafe.py` — Graceful degradation manager (5 priority levels)
+- `src/control/sensors.py` — Sensor fusion with staleness detection
+- `src/control/actuators.py` — MQTT actuator interface with deadband filtering
 - `src/services/voice_service.py` — STT (Vosk) + TTS (Kokoro)
 - `src/api/` — REST route handlers (telemetry, devices, relays, commands, events, observations, cortex, chat, voice)
 - `config/rules.yaml` — LLM escalation config
 
 **Test Files:**
 - `tests/conftest.py` — Test fixtures (sqlite_db, mock_redis, telemetry_factory)
-- `tests/test_cortex_api.py` — /api/cortex routes (status, profiles, goals)
+- `tests/test_cortex_api.py` — /api/cortex routes (status, profiles, goals, room-config)
 - `tests/test_derived_metrics.py` — VPD calculation, dry-back rate, DLI integration
 - `tests/test_ecosystem_health.py` — Health scoring, strategy tolerance, goal compliance
 - `tests/test_grow_profiles.py` — Profile/goal CRUD, phase validation
@@ -225,4 +256,9 @@ flowchart TB
 - `tests/test_substrate_physics.py` — Substrate presets, geometry, evap modifier, stress, irrigation
 - `tests/test_room_config.py` — YAML loading, validation, ventilation/substrate parsing
 - `tests/test_mpc_controller.py` — MPC controller integration tests
+- `tests/test_mpc_model.py` — 7-state thermodynamic model: SVP, humidity, dynamics, linearization
+- `tests/test_mpc_solver.py` — OSQP solver: feasibility, bounds, timing (<100ms), warm-start
+- `tests/test_estimator.py` — EKF: predict/update, missing sensors, covariance stability
+- `tests/test_compliance.py` — Compliance tracker: ring buffer, in/out-of-band, RMSE, dryback
+- `tests/test_failsafe.py` — Fail-safe: state transitions, recovery, safe defaults
 - `tests/test_e2e_flow.py` — E2E: MQTT→API→Storage flow (requires running services)

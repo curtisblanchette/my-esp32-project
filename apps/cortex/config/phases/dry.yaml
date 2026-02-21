@@ -1,0 +1,16 @@
+# Dry/cure phase target setpoints
+day:
+  vpd: 1.0
+  t_air: 20.0
+  rh: 55.0
+  co2: 420.0
+  dryback_rate: -0.005
+  theta: 0.25
+
+night:
+  vpd: 1.0
+  t_air: 18.0
+  rh: 55.0
+  co2: 420.0
+  dryback_rate: -0.005
+  theta: 0.25

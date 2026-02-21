@@ -343,12 +343,6 @@ export function ChatInput({ noBorder }: { noBorder?: boolean } = {}): React.Reac
     if (action.type === "query" && action.sensor) {
       return `${action.sensor}: ${action.value ?? "N/A"}`;
     }
-    if (action.type === "proposed_rules" && action.rules) {
-      return `${action.rules.length} rules proposed`;
-    }
-    if (action.type === "rules_activated") {
-      return `✓ ${action.count} rules activated`;
-    }
     return null;
   };
 
@@ -477,27 +471,11 @@ export function ChatInput({ noBorder }: { noBorder?: boolean } = {}): React.Reac
                 }`}
               >
                 {msg.role === "assistant" ? formatMessage(msg.content) : msg.content}
-                {msg.action && msg.action.type !== "proposed_rules" && (
+                {msg.action && (
                   <span className="block text-xs opacity-70 mt-1">
                     {msg.action.type === "command" && "✓ "}
                     {formatAction(msg.action)}
                   </span>
-                )}
-                {msg.action?.type === "proposed_rules" && (
-                  <div className="flex gap-2 mt-2">
-                    <button
-                      onClick={() => sendMessage("approve")}
-                      className="px-3 py-1 bg-green-500/20 hover:bg-green-500/30 border border-green-500/30 rounded text-xs font-medium transition-colors"
-                    >
-                      Approve All
-                    </button>
-                    <button
-                      onClick={() => sendMessage("reject these rules")}
-                      className="px-3 py-1 bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 rounded text-xs font-medium transition-colors"
-                    >
-                      Reject
-                    </button>
-                  </div>
                 )}
                 {/* Play audio button for assistant messages */}
                 {msg.role === "assistant" && msg.audioUrl && (

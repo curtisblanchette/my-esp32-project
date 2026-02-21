@@ -17,5 +17,8 @@ websockets>=13.0
 matplotlib>=3.8.0
 scipy>=1.11.0
 
+# MPC solver
+osqp>=0.6.7
+
 # Testing
 pytest>=8.0.0

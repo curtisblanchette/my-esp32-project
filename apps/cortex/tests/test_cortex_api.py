@@ -1,5 +1,8 @@
 """Tests for the Cortex intelligence API routes."""
 
+import os
+import tempfile
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -146,3 +149,46 @@ class TestCortexRoutes:
         assert r.status_code == 200
         assert r.json()["ok"] is True
         assert sqlite_db.get_goal(g["id"]) is None
+
+    # ── Room Config ──────────────────────────────────────────────────
+
+    def test_room_config_unconfigured(self, cortex_client, monkeypatch):
+        """Returns configured=false when ROOM_CONFIG_PATH is empty."""
+        client, _ = cortex_client
+        monkeypatch.setattr("src.api.cortex.ROOM_CONFIG_PATH", "")
+
+        r = client.get("/api/cortex/room-config")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["configured"] is False
+        assert data["config"] is None
+
+    def test_room_config_valid_yaml(self, cortex_client, monkeypatch):
+        """Returns parsed YAML when config file exists."""
+        client, _ = cortex_client
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write("name: Test Room\nspace:\n  volume_m3: 10.0\n")
+            f.flush()
+            monkeypatch.setattr("src.api.cortex.ROOM_CONFIG_PATH", f.name)
+
+            r = client.get("/api/cortex/room-config")
+            assert r.status_code == 200
+            data = r.json()
+            assert data["ok"] is True
+            assert data["configured"] is True
+            assert data["config"]["name"] == "Test Room"
+            assert data["config"]["space"]["volume_m3"] == 10.0
+
+        os.unlink(f.name)
+
+    def test_room_config_missing_file(self, cortex_client, monkeypatch):
+        """Returns configured=false when file doesn't exist."""
+        client, _ = cortex_client
+        monkeypatch.setattr("src.api.cortex.ROOM_CONFIG_PATH", "/nonexistent/room.yaml")
+
+        r = client.get("/api/cortex/room-config")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["configured"] is False

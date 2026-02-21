@@ -1,0 +1,16 @@
+# Vegetative phase target setpoints
+day:
+  vpd: 0.9
+  t_air: 26.0
+  rh: 60.0
+  co2: 1000.0
+  dryback_rate: -0.010
+  theta: 0.38
+
+night:
+  vpd: 0.6
+  t_air: 22.0
+  rh: 65.0
+  co2: 420.0
+  dryback_rate: -0.005
+  theta: 0.38

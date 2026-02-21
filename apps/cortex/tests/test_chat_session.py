@@ -15,18 +15,15 @@ class TestChatSessionStore:
         session = store.get_or_create("sess-1")
         assert isinstance(session, ChatSession)
         assert session.session_id == "sess-1"
-        assert session.location is None
-        assert session.goal is None
-        assert session.proposed_rules is None
         assert session.messages == []
 
     def test_get_or_create_returns_existing(self):
         store = ChatSessionStore()
         s1 = store.get_or_create("sess-1")
-        s1.location = "grow-tent"
+        s1.messages.append({"role": "user", "content": "hello"})
         s2 = store.get_or_create("sess-1")
         assert s2 is s1
-        assert s2.location == "grow-tent"
+        assert len(s2.messages) == 1
 
     def test_add_message(self):
         store = ChatSessionStore()
@@ -51,27 +48,6 @@ class TestChatSessionStore:
         store = ChatSessionStore()
         ctx = store.get_conversation_context("nonexistent")
         assert ctx == []
-
-    def test_set_and_get_proposed_rules(self):
-        store = ChatSessionStore()
-        rules = [{"name": "rule1"}, {"name": "rule2"}]
-        store.set_proposed_rules("sess-1", rules)
-        result = store.get_proposed_rules("sess-1")
-        assert result == rules
-
-    def test_get_proposed_rules_nonexistent(self):
-        store = ChatSessionStore()
-        assert store.get_proposed_rules("nonexistent") is None
-
-    def test_clear_proposed_rules(self):
-        store = ChatSessionStore()
-        store.set_proposed_rules("sess-1", [{"name": "rule1"}])
-        store.clear_proposed_rules("sess-1")
-        assert store.get_proposed_rules("sess-1") is None
-
-    def test_clear_proposed_rules_nonexistent(self):
-        store = ChatSessionStore()
-        store.clear_proposed_rules("nonexistent")  # Should not raise
 
     def test_ttl_expiration(self):
         store = ChatSessionStore()

@@ -31,8 +31,6 @@ def create_chat_router(sqlite, redis_client, ws_server, ollama, data_reader=None
         try:
             mqtt = getattr(request.app.state, "mqtt", None)
             session_store = getattr(request.app.state, "chat_session_store", None)
-            rule_generator = getattr(request.app.state, "rule_generator", None)
-            engine = getattr(request.app.state, "engine", None)
 
             # Get conversation history if session is active
             conversation_history = None
@@ -49,8 +47,6 @@ def create_chat_router(sqlite, redis_client, ws_server, ollama, data_reader=None
                 sqlite=sqlite, redis=redis_client, mqtt=mqtt, ws=ws_server,
                 device_id=body.deviceId, location=body.location,
                 data_reader=data_reader,
-                session_store=session_store, session_id=body.sessionId,
-                rule_generator=rule_generator, engine=engine,
             )
 
             # Record assistant reply in session
@@ -81,8 +77,6 @@ def create_chat_router(sqlite, redis_client, ws_server, ollama, data_reader=None
     async def chat_stream(body: ChatRequest, request: Request):
         mqtt = getattr(request.app.state, "mqtt", None)
         session_store = getattr(request.app.state, "chat_session_store", None)
-        rule_generator = getattr(request.app.state, "rule_generator", None)
-        engine = getattr(request.app.state, "engine", None)
 
         # Get conversation history if session is active
         conversation_history = None
@@ -104,8 +98,6 @@ def create_chat_router(sqlite, redis_client, ws_server, ollama, data_reader=None
                             sqlite=sqlite, redis=redis_client, mqtt=mqtt, ws=ws_server,
                             device_id=body.deviceId, location=body.location,
                             data_reader=data_reader,
-                            session_store=session_store, session_id=body.sessionId,
-                            rule_generator=rule_generator, engine=engine,
                         )
 
                         # Record assistant reply in session

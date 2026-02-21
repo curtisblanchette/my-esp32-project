@@ -1,6 +1,6 @@
 # Cortex
 
-The autonomous decision engine for Mycelium. Cortex ingests real-time sensor telemetry via MQTT, evaluates automation rules enriched with trend analysis and predictive forecasting, tracks command effectiveness, and adapts its own rules over time using LLM-powered analysis. It also provides voice processing (STT/TTS) and natural-language chat for the dashboard.
+The autonomous environment controller for Mycelium. Cortex ingests real-time sensor telemetry via MQTT, builds a physics-based model of the growing environment, and uses Model Predictive Control (MPC) to compute optimal actuator configurations that steer toward cultivation goals. Rather than reacting to threshold violations, Cortex predicts the best possible combination of actuator intensities using scientific calculations grounded in environment geometry, available appliances, and live sensor readings. It also provides voice processing (STT/TTS) and natural-language chat for the dashboard.
 
 ## Architecture
 
@@ -12,36 +12,38 @@ Cortex ────────────────────────�
   │
   ├─ Ingest ──→ Redis (HOT, 48h TTL) + SQLite (COLD, aggregated)
   │
-  ├─ Context ─→ DataReader (merge hot+cold)
-  │             TrendContext (linear regression, rate-of-change)
-  │             CortexMemory (Welford's online baselines)
-  │             Forecaster (linear projection, EWMA smoothing)
-  │             OutcomeTracker (command effectiveness scores)
+  ├─ Model ──→  PhysicsEngine (psychrometric ODE, Ball-Berry stomata,
+  │              substrate dry-back, Darcy-Weisbach ventilation)
+  │              Calibrated from room geometry + actuator specs + sensor readings
   │
-  ├─ Decide ──→ Rules Engine ──→ MQTT commands ──→ ESP32
-  │             │  threshold + duration guards + cooldown
-  │             │  trend / time-of-day / forecast / baseline conditions
-  │             │  cross-device scope (any / all / specific device)
-  │             │
-  │             └─ LLM escalation (rapid change, conflicts, unknowns)
+  ├─ Predict ─→ MPC State Planner (scipy SLSQP, receding horizon)
+  │              deepcopy(env) → step() → rollout → cost minimization
+  │              Day/night-aware goal scheduling per Aroya cultivation science
   │
-  ├─ Learn ───→ Rule Advisor (6h cycle)
-  │             LLM analyzes outcomes + baselines + observations
-  │             High-confidence threshold tweaks auto-apply
-  │             Lower-confidence suggestions → manual approval
+  ├─ Act ─────→ Optimal actuator intensities → MQTT commands → ESP32
+  │              No dead bands, no cooldowns, no conflict resolution needed
+  │
+  ├─ Observe ─→ Context enrichment (trends, baselines, forecasts, effect profiles)
+  │              Ecosystem health scoring (weighted goal compliance)
+  │
+  ├─ Learn ───→ Rule Advisor (6h cycle, LLM-powered)
   │
   └─ Serve ───→ FastAPI REST + WebSocket + Voice (STT/TTS) + Chat
 ```
 
-### Five-Phase Cybernetic Loop
+### Control Philosophy
 
-| Phase | Capability | Key Module |
-|-------|-----------|------------|
-| 1 | Trend context + hourly baselines | `analysis.py`, `cortex_memory.py` |
-| 2 | Command outcome tracking & scoring | `outcome_tracker.py` |
-| 3 | Predictive forecasting + breach detection | `forecaster.py` |
-| 4 | Adaptive rule learning via LLM | `rule_advisor.py` |
-| 5 | Multi-device coordination | `coordinator.py` |
+Rules fight symptoms — a threshold is exceeded, so an actuator toggles. MPC prevents them — it predicts the optimal trajectory across all actuators simultaneously, finding smooth control signals that keep every metric within its goal range.
+
+This distinction eliminates entire categories of control-plane complexity:
+
+- **No dead bands or hysteresis** — the optimizer naturally avoids oscillation because rate-of-change penalties make toggling expensive
+- **No cooldown timers** — smooth continuous outputs don't need debouncing
+- **No conflict resolution** — cross-device interactions are captured in the physics model, not resolved by priority rules after the fact
+- **Energy efficiency is a first-class objective** — the cost function directly penalizes energy use, not just goal deviation
+- **Horticulturally-accurate goals** — day/night target ranges follow Aroya cannabis cultivation science, with automatic scheduling based on light cycle
+
+The physics engine serves as both the prediction model and ground truth: `deepcopy(env)` creates the forecast, `env.step()` applies the control. No surrogate model, no training data, no sim-to-real gap.
 
 ## Quick Start
 
@@ -85,15 +87,24 @@ docker run -p 8000:8000 cortex
 
 ## How It Works
 
-### Decision Engine
+### MPC State Planner (Primary)
 
-Cortex subscribes to MQTT telemetry and evaluates rules defined in `config/rules.yaml`:
+The MPC controller is the primary control path. It subscribes to MQTT telemetry and computes optimal actuator intensities:
 
-1. **Rule evaluation** — checks sensor readings against conditions with duration guards (condition must hold for N seconds) and cooldown timers (60s default) to prevent false positives and rapid toggling
-2. **Context enrichment** — every evaluation includes trend direction, rate-of-change, learned baselines, forecasted values, and past command effectiveness
-3. **Command execution** — publishes MQTT commands to devices when rules trigger; tracks outcomes at 1m/5m/10m intervals to score effectiveness
-4. **LLM escalation** — routes anomalies (rapid changes, conflicting rules, unknown patterns) to Ollama for deeper analysis when rules alone aren't sufficient
-5. **Adaptive learning** — every 6 hours, the Rule Advisor uses LLM analysis of outcomes, baselines, and human observations to suggest threshold and timing adjustments
+1. **Physics model** — `PhysicsEngine` models the growing environment using psychrometric ODEs, Ball-Berry stomatal conductance, substrate dry-back curves, and Darcy-Weisbach duct flow. Calibrated from room geometry YAML + actuator specs + live sensor readings.
+2. **Cost function** — `w_goal × J_goal + w_energy × J_energy + w_rate × J_rate` balances goal compliance, energy use, and control smoothness. Day/night goal scheduling activates different target ranges based on `timeWindow` (`onHour`/`offHour`).
+3. **Receding horizon** — optimizes 6 intervals × 7 actuators (42 decision variables) via scipy SLSQP. Only the first interval is applied; the horizon shifts forward each solve. Light and CO2 schedules force actuators off during darkness.
+4. **Warm start** — previous solution seeds the next solve for faster convergence.
+5. **Command output** — optimal intensities (0.0–1.0) are published as MQTT commands to ESP32 devices.
+
+### Rules Engine (Legacy)
+
+The threshold-based rules engine predates MPC and is no longer in the active control loop. The code remains in the repo for reference:
+
+1. **Rule evaluation** — checks sensor readings against conditions with duration guards and cooldown timers
+2. **Context enrichment** — trend direction, rate-of-change, baselines, forecasts, and command effectiveness
+3. **LLM escalation** — routes anomalies to Ollama for deeper analysis
+4. **Goal-aware filtering** — impact estimation using learned effect profiles and ecosystem health scoring
 
 ### Chat & Voice
 
@@ -125,9 +136,9 @@ SQLite tables: `telemetry`, `devices`, `actuators`, `commands`, `events`, `corte
 
 A background job aggregates Redis → SQLite every 5 minutes.
 
-## Rules Configuration
+## Rules Configuration (Legacy)
 
-Rules live in `config/rules.yaml`. The engine supports layered conditions that can be combined:
+The rules engine predates MPC. Rules are seeded from `config/rules.yaml` on first run and stored in SQLite. This section documents the rule format for reference. The engine supports layered conditions that can be combined:
 
 ```yaml
 rules:
@@ -398,13 +409,28 @@ Shared fixtures in `conftest.py`: `sqlite_db` (in-memory), `mock_redis`, `teleme
 ```
 apps/cortex/
 ├── config/
-│   └── rules.yaml                    # Automation rules
+│   └── rules.yaml                    # Seed rules (imported to SQLite on first run)
 ├── data/                             # Runtime data (gitignored)
 │   └── telemetry.sqlite
 ├── models/                           # ML models (gitignored)
 │   ├── vosk-model-small-en-us-0.15/
 │   ├── kokoro-v1.0.onnx
 │   └── voices-v1.0.bin
+├── simulations/
+│   ├── physics.py                    # PhysicsEngine (psychrometric ODE, stomata, ventilation)
+│   ├── state_planner.py              # MPCPlanner (SLSQP receding-horizon optimizer)
+│   ├── runner.py                     # SimulationRunner (multi-day time-step loop)
+│   ├── charts.py                     # Matplotlib visualization for simulation output
+│   ├── simulate.py                   # CLI entry point (python -m simulations.simulate)
+│   ├── room_config.py                # Room geometry + actuator spec loader
+│   ├── duct_physics.py               # Darcy-Weisbach duct flow model
+│   ├── substrate_physics.py          # Substrate dry-back + irrigation model
+│   ├── scenarios/
+│   │   └── default.py                # Default scenario (actuator specs, goal ranges)
+│   └── rooms/                        # Room geometry YAML configs
+│       ├── tent_4x4.yaml
+│       ├── commercial_10x10.yaml
+│       └── warehouse.yaml
 ├── src/
 │   ├── main.py                       # Entry point: MQTT + API + rules engine
 │   ├── voice_api.py                  # FastAPI app (lifespan, routes, WebSocket)
@@ -412,7 +438,7 @@ apps/cortex/
 │   ├── api/                          # REST route handlers
 │   │   ├── chat.py                   #   Chat / NLP endpoints
 │   │   ├── commands.py               #   Command history
-│   │   ├── cortex.py                 #   Intelligence endpoints (Phase 4)
+│   │   ├── cortex.py                 #   Intelligence endpoints
 │   │   ├── devices.py                #   Device registry
 │   │   ├── events.py                 #   Event log
 │   │   ├── observations.py           #   Human observation logging
@@ -425,17 +451,23 @@ apps/cortex/
 │   └── services/
 │       ├── analysis.py               # Stats, trends, anomaly detection
 │       ├── background_jobs.py        # Aggregation, expiration, rule advisor
-│       ├── coordinator.py            # Cross-device state provider (Phase 5)
-│       ├── cortex_memory.py          # Hourly baseline tracking (Phase 1)
+│       ├── coordinator.py            # Cross-device state provider
+│       ├── cortex_memory.py          # Hourly baseline tracking (Welford's)
 │       ├── data_reader.py            # Unified Redis + SQLite reader
-│       ├── decision_engine.py        # Rules engine + LLM escalation
-│       ├── forecaster.py             # Linear/EWMA forecasting (Phase 3)
+│       ├── decision_engine.py        # Rules engine + LLM escalation (fallback)
+│       ├── derived_metrics.py        # VPD (Tetens), dry-back rate, DLI
+│       ├── ecosystem_health.py       # Weighted goal compliance scoring
+│       ├── effect_tracker.py         # Cross-variable actuator effect learning
+│       ├── forecaster.py             # Linear/EWMA forecasting
+│       ├── impact_estimator.py       # Pre-fire ecosystem health prediction
 │       ├── intent_executor.py        # Shared chat + voice intent handler
 │       ├── mqtt_client.py            # MQTT subscriber/publisher
 │       ├── ollama_client.py          # LLM client (intents, analysis, rules)
-│       ├── outcome_tracker.py        # Command effectiveness scoring (Phase 2)
+│       ├── outcome_tracker.py        # Command effectiveness scoring
+│       ├── recovery_tracker.py       # Goal compliance recovery tracking
 │       ├── redis_client.py           # Hot storage (48h TTL)
-│       ├── rule_advisor.py           # Adaptive rule learning (Phase 4)
+│       ├── rule_advisor.py           # Adaptive rule learning (LLM-powered)
+│       ├── sensor_meta.py            # Sensor type resolution + units
 │       ├── shared.py                 # Shared service registry
 │       ├── sqlite_client.py          # Cold storage + schema + migrations
 │       ├── voice_service.py          # Vosk STT + Kokoro TTS
@@ -449,11 +481,20 @@ apps/cortex/
 │   ├── test_cross_device_rules.py
 │   ├── test_data_reader.py
 │   ├── test_decision_engine.py
+│   ├── test_derived_metrics.py
+│   ├── test_ecosystem_health.py
+│   ├── test_effect_tracker.py
 │   ├── test_e2e_flow.py              # E2E (requires running services)
 │   ├── test_forecaster.py
+│   ├── test_goal_aware_decisions.py
+│   ├── test_grow_profiles.py
+│   ├── test_impact_estimator.py
 │   ├── test_observations.py
 │   ├── test_outcome_tracker.py
-│   └── test_rule_advisor.py
+│   ├── test_recovery_tracker.py
+│   ├── test_rule_advisor.py
+│   ├── test_simulation_*.py          # Simulation tests (multi-day, physics, MPC, etc.)
+│   └── ...
 ├── Dockerfile
 ├── pytest.ini
 ├── requirements.txt

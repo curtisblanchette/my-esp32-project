@@ -1,0 +1,57 @@
+# Warehouse — 20m x 30m (large commercial facility)
+# Industrial-scale equipment, high plant count, variable-speed everything.
+
+name: "Warehouse Facility"
+
+space:
+  floor_area_m2: 600.0      # 20m x 30m
+  volume_m3: 2400.0          # 20 x 30 x 4m ceiling
+  ach_base: 0.2              # well-sealed industrial building
+  ach_max: 8.0               # large HVAC system (lower ACH due to volume)
+  num_pots: 200
+  max_ppfd: 2000.0           # high-intensity commercial LED arrays
+  co2_ambient: 420.0
+  h_ambient: 45.0            # climate-controlled building exterior
+
+actuators:
+  relay1: { name: fan,           max_watts: 800,   control_type: variable }
+  relay2: { name: exhaust_fan,   max_watts: 2000,  control_type: variable }
+  relay3: { name: humidifier,    max_watts: 500,   control_type: variable, humidify_g_per_min: 80.0  }
+  relay4: { name: dehumidifier,  max_watts: 8000,  control_type: variable, dehumidify_g_per_min: 3000.0 }
+  relay5: { name: irrigation,    max_watts: 200,   control_type: binary   }
+  relay6: { name: light,         max_watts: 15000, control_type: variable }
+  relay7: { name: co2_injector,  max_watts: 1500,  control_type: binary   }
+
+ambient:
+  schedule: fixed
+  temp: 25.0                 # climate-controlled building exterior
+
+plant:
+  phase: veg
+  lai: 1.5                     # effective LAI — walkways, equipment, spacing reduce canopy coverage
+
+substrate:
+  medium: rockwool
+  container:
+    type: bed
+    length_cm: 1000
+    width_cm: 1500
+    depth_cm: 17.5
+
+ventilation:
+  exhaust:
+    rated_cfm: 4000            # industrial inline fan (dual-fan setup)
+    max_static_pressure: 2.5   # inches water column at stall
+  duct:
+    diameter_in: 14            # 14" rigid galvanised
+    length_ft: 40              # 40 ft duct run (long warehouse)
+    material: smooth           # rigid duct
+    elbows_90: 3               # three 90° bends
+    has_carbon_filter: false   # no filter on warehouse exhaust
+  passive_ach: 0.2             # well-sealed industrial building
+
+initial_conditions:
+  temperature: 22.0
+  humidity: 50.0
+  co2: 400.0
+  soil_moisture: [38.0, 36.0, 40.0, 35.0]         # VWC near field capacity for rockwool

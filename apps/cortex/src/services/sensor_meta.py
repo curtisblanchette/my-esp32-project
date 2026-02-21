@@ -10,8 +10,10 @@ SENSOR_TYPE_DEFAULTS: dict[str, dict[str, str]] = {
     "motion":        {"unit": "",    "label": "Motion",        "rate_unit": ""},
     "light_level":   {"unit": "lux", "label": "Light Level",   "rate_unit": "lux/min"},
     "pressure":      {"unit": "hPa", "label": "Pressure",      "rate_unit": "hPa/min"},
-    "co2":           {"unit": "ppm", "label": "CO\u2082",      "rate_unit": "ppm/min"},
-    "event":         {"unit": "",    "label": "Event",         "rate_unit": ""},
+    "co2":              {"unit": "ppm", "label": "CO\u2082",           "rate_unit": "ppm/min"},
+    "leaf_temperature": {"unit": "\u00b0C",  "label": "Leaf Temp",      "rate_unit": "\u00b0C/min"},
+    "vpd":              {"unit": "kPa", "label": "VPD",            "rate_unit": "kPa/min"},
+    "event":            {"unit": "",    "label": "Event",          "rate_unit": ""},
 }
 
 # Maps device-reported unit strings (from registry/birth) to display symbols.
@@ -33,6 +35,8 @@ _PREFIX_MAP: dict[str, str] = {
     "motion": "motion",
     "light": "light_level",
     "co2": "co2",
+    "leaf_temp": "leaf_temperature",
+    "vpd": "vpd",
     "cam": "event",
     "pressure": "pressure",
 }

@@ -2,27 +2,24 @@
   <img src="header.png" alt="Mycelium" width="830" />
 </p>
 
-An open-source framework for building AI-powered IoT systems with ESP32 devices, MQTT messaging, and local LLM intelligence. Devices publish sensor telemetry and receive commands over MQTT, while a local AI orchestrator evaluates configurable rules and escalates to Ollama for autonomous decision-making.
+An open-source framework for building AI-powered IoT systems with ESP32 devices, MQTT messaging, and local LLM intelligence. Devices publish sensor telemetry and receive commands over MQTT, while a local AI orchestrator uses Model Predictive Control (MPC) with physics-based optimization and Ollama LLM for autonomous decision-making.
 
 On the device side, a configuration-driven MicroPython library handles the complexity of microcontroller development. Define your sensors and actuators in a [JSON registry](#device-registry), and the framework automatically initializes hardware drivers (`SWITCH`, `PULSE`, `TempSensor`), manages WiFi connectivity, establishes [MQTT sessions with birth/will lifecycle messages](#mqtt-message-flow), and exposes a [command handler](#command-flow) — all without writing boilerplate. The `HomeHubClient` abstracts MQTT topic structure, correlation-based command acknowledgments, and telemetry publishing into a simple API, so adding a new device is just a registry entry and a [flash](#device-management).
 
 The same device capabilities that drive the firmware also drive the UI. When a device comes online, its birth message advertises its sensors and actuators to the [Cortex backend](#cortex-backend), which dynamically builds per-device panels in the [React dashboard](#web-dashboard) — complete with the correct controls for each actuator type (toggle switches, momentary pulse buttons), live sensor gauges, and historical charts. No frontend code changes are needed to support new devices; plug in an ESP32, define it in the registry, and it appears on the dashboard ready to control from anywhere on the local network via WebSocket, chat, or voice.
 
-AI operates on two independent paths that converge on MQTT as a shared command bus. The [Cortex backend](#cortex-backend) subscribes to device telemetry and continuously evaluates a [YAML rules engine](#configuration) — threshold conditions with duration guards and cooldown timers that prevent false positives and rapid toggling. When readings exceed rule boundaries (e.g., temperature above 25°C for 15 seconds), it publishes commands directly to devices without human intervention. For anomalies the rules can't handle, like rapid temperature swings exceeding 5°C per minute, the engine [escalates to a local Ollama LLM](#decision-flow) for reasoning. The same backend interprets natural language from [chat and voice](#voice--chat-processing-pipeline) through the same Ollama model, which returns structured JSON intents (command, query, history, analyze) that are executed identically regardless of input method. Devices don't know whether a command came from a rule, the LLM, or a user — they all arrive as the same [MQTT message](#message-envelope-format-v1).
+AI operates through Model Predictive Control (MPC) converging on MQTT as a shared command bus. The [Cortex backend](#cortex-backend) subscribes to device telemetry and uses a physics-based MPC planner — rolling-horizon optimization with SLSQP that predicts environment response and computes optimal actuator intensities to meet grow profile goals. The same backend interprets natural language from [chat and voice](#voice--chat-processing-pipeline) through a local Ollama model, which returns structured JSON intents (command, query, history, analyze) that are executed identically regardless of input method. Devices don't know whether a command came from the MPC planner, the LLM, or a user — they all arrive as the same [MQTT message](#message-envelope-format-v1).
 
 <img src="screenshots/carousel.gif" alt="Mycelium" width="830" />
 
 - **[Configuration-driven devices](#device-registry)** — declare sensors and actuators in `registry.json`, flash, and go
 - **[Dynamic dashboard](#web-dashboard)** — device panels, controls, and charts generated from device capabilities
-- **[Autonomous rules engine](#ai-prefrontal)** — SQLite-backed rules with full CRUD UI, trend conditions, time-of-day windows, duration guards, cooldowns, and LLM escalation (seeded from YAML on first run)
-- **[Predictive forecasting](#how-it-works)** — linear projection and EWMA smoothing to act before thresholds are breached
-- **[Baseline learning](#how-it-works)** — per-device, per-hour baselines for "unusual for this time of day" detection
-- **[Outcome tracking](#how-it-works)** — commands correlated with sensor effects, effectiveness scored and fed back to LLM
-- **[Adaptive learning](#how-it-works)** — Rule Advisor analyzes outcome data every 6 hours, uses LLM to suggest threshold/timing adjustments, auto-applies high-confidence changes (persisted to SQLite)
-- **[Multi-device coordination](#how-it-works)** — cross-device rules with `scope` (read from any/all devices) and `target_scope` (send to all/specific devices)
-- **[Nerve Center](#web-dashboard)** — dedicated control page for managing rules (CRUD), reviewing suggestions, inspecting baselines, and monitoring system health
+- **[MPC control](#ai-prefrontal)** — Model Predictive Control with physics-based optimization, rolling-horizon SLSQP solver, and goal-driven actuator scheduling
+- **Grow profiles & goals** — per-location grow profiles with strategy (precision/balanced/efficiency), growth phases, and metric goals with compliance scoring
+- **Ecosystem health scoring** — weighted goal compliance with strategy-adjusted tolerances, per-metric breakdowns, and historical tracking
+- **Derived metrics** — computed sensors: VPD (Tetens equation), dry-back rate (linear regression), DLI (trapezoidal integration)
 - **Human observation logging** — log plant-health events sensors can't detect (mold, pests, wilting) via the Activity Center
-- **Generic sensor pipeline** — entire telemetry pipeline is sensor-type agnostic; add any sensor type and it flows through MQTT, Redis, SQLite, rules, charts, and baselines automatically
+- **Generic sensor pipeline** — entire telemetry pipeline is sensor-type agnostic; add any sensor type and it flows through MQTT, Redis, SQLite, charts, and baselines automatically
 - **[Natural language control](#voice--chat-processing-pipeline)** — chat and voice commands interpreted by Ollama into structured intents
 - **HOT data** stored in [Redis](#redis) (48-hour retention)
 - **COLD data** aggregated in [SQLite](#sqlite) (historical trends)
@@ -58,7 +55,7 @@ flowchart TB
     end
 
     subgraph Host["🖥️ Host Services (Native)"]
-        Cortex["🧠 Cortex<br/>Python/FastAPI :8000<br/>API + MQTT + Rules + Voice"]
+        Cortex["🧠 Cortex<br/>Python/FastAPI :8000<br/>API + MQTT + MPC + Voice"]
         SQLite[("📁 SQLite<br/>COLD Storage")]
         Ollama["🤖 Ollama LLM<br/>:11434"]
     end
@@ -95,7 +92,7 @@ flowchart LR
         MQTT["MQTT<br/>Broker"]
         subgraph Cortex["Cortex (FastAPI)"]
             Prefrontal["Prefrontal"]
-            Rules["Rules<br/>Engine"]
+            MPC["MPC<br/>Planner"]
         end
         LLM["Ollama<br/>LLM"]
     end
@@ -115,11 +112,11 @@ flowchart LR
     UI -->|REST| Prefrontal
 
     MQTT --> Prefrontal
-    Prefrontal --> Rules
+    Prefrontal --> MPC
     Prefrontal --> Redis
     Prefrontal --> SQLite
-    Rules -->|escalate| LLM
-    Rules --> Commands
+    MPC --> Commands
+    Prefrontal -->|chat/voice| LLM
 
     Redis --> Prefrontal
     SQLite --> Prefrontal
@@ -145,7 +142,7 @@ sequenceDiagram
     Note over D,WS: Telemetry Flow
     loop Every 5 seconds
         D->>M: home/{location}/{deviceId}/telemetry
-        M->>C: Store in Redis, evaluate rules
+        M->>C: Store in Redis, evaluate MPC
         C->>WS: {type: "latest", data: {...}}
     end
 
@@ -291,7 +288,7 @@ This starts everything:
 |---------|------|---------|---------|
 | **MQTT Broker** (Mosquitto) | `1883` | Docker | Message routing |
 | **Redis** | `6381` | Docker | HOT data (48hr) |
-| **Cortex** | `8000` | Host | REST API + WebSocket + MQTT + Rules + Voice |
+| **Cortex** | `8000` | Host | REST API + WebSocket + MQTT + MPC + Voice |
 | **Web Dashboard** | `5173` | Docker | React UI |
 | **Ollama** | `11434` | Host (Metal GPU) | LLM inference |
 
@@ -515,12 +512,14 @@ flowchart TB
 | `events` | Device events log |
 | `devices` | Device registry with actuator state and display order |
 | `cortex_baselines` | Per-device, per-sensor, per-hour learned baselines (Welford's algorithm) |
-| `cortex_outcomes` | Command effectiveness scores with pre/post sensor snapshots (Phase 2) |
-| `cortex_rules` | Automation rules — single source of truth (seeded from YAML on first run) |
-| `cortex_suggestions` | Rule adjustment suggestions from the Rule Advisor (Phase 4) |
+| `cortex_outcomes` | Command effectiveness scores with pre/post sensor snapshots |
+| `cortex_profiles` | Per-location grow profiles with strategy and growth phase |
+| `cortex_goals` | Per-profile metric goals with ranges, tolerance, priority, and schedules |
+| `cortex_health` | Periodic ecosystem health snapshots with per-metric breakdowns |
+| `cortex_effects` | Learned per-actuator, per-sensor effect deltas (Welford's incremental stats) |
 
 ### Cortex Backend
-- **Purpose:** Unified backend — REST API, WebSocket, MQTT client, rules engine, voice
+- **Purpose:** Unified backend — REST API, WebSocket, MQTT client, MPC control, voice
 - **Technology:** Python/FastAPI
 - **Port:** `8000`
 
@@ -539,14 +538,12 @@ flowchart TB
 | `/api/events` | GET | Device events log |
 | `/api/observations` | POST | Log human observation (`{deviceId, category, notes?}`) |
 | `/api/cortex/status` | GET | System intelligence overview |
-| `/api/cortex/baselines/:id` | GET | Learned hourly baselines for a device |
-| `/api/cortex/adjustments` | GET | Rule adjustment suggestions (`?status=pending\|applied\|rejected`) |
-| `/api/cortex/adjustments/:id` | POST | Approve or reject a suggestion |
-| `/api/cortex/rules` | GET | All rules from SQLite with enabled/modified/source state |
-| `/api/cortex/rules` | POST | Create a new rule |
-| `/api/cortex/rules/{id}` | PUT | Update an existing rule by UUID |
-| `/api/cortex/rules/{id}` | PATCH | Toggle rule enabled state |
-| `/api/cortex/rules/{id}` | DELETE | Delete a rule (cascades to suggestions) |
+| `/api/cortex/profiles` | GET/POST | Grow profiles (list / create) |
+| `/api/cortex/profiles/:id` | GET/PUT/DELETE | Single profile CRUD |
+| `/api/cortex/profiles/:id/goals` | GET/POST | Goals for a profile (list / create) |
+| `/api/cortex/goals/:id` | PUT/DELETE | Update or delete a goal |
+| `/api/cortex/health/:location` | GET | Ecosystem health snapshots (`sinceMs`, `untilMs`) |
+| `/api/cortex/effects` | GET | Learned actuator effect profiles (`deviceId`, `actuator`, `minSamples`) |
 | `/api/chat/stream` | POST | Streaming chat (SSE) |
 | `/api/voice/transcribe` | POST | Audio → Text (Vosk STT) |
 | `/api/voice/synthesize` | POST | Text → Audio (Kokoro TTS) |
@@ -562,8 +559,6 @@ Message Types:
 - `{type: "command", data: Command}` - Single command broadcast
 - `{type: "events", data: DeviceEvent[]}` - Device events
 - `{type: "event", data: DeviceEvent}` - Single event broadcast
-- `{type: "suggestions", data: RuleSuggestion[]}` - Rule adjustment suggestions
-- `{type: "rules", data: CortexRule[]}` - Rule states (enabled/disabled/modified)
 
 ### Web Dashboard
 - **Purpose:** React SPA for visualizing telemetry data
@@ -575,151 +570,22 @@ Message Types:
   - Time-series charts (Chart.js)
   - Relay control interface
   - Drag-and-drop device panel reordering (persisted)
-  - AI status indicator and activity feed (slide-out drawer) with rule suggestion approve/reject
+  - AI status indicator and activity feed (slide-out drawer)
   - Human observation logging (mold, pests, wilting, etc.) via Activity Center
-  - **Nerve Center** — dedicated Cortex control page with tabs:
-    - **Overview**: system health stats, advisor controls, pending suggestions
-    - **Rules**: full CRUD for automation rules — create, edit, delete, toggle — with category-grouped card grid
-    - **Suggestions**: filterable approve/reject interface for rule adjustments
-    - **Baselines**: 24h sensor baseline charts with ±1σ bands per device
   - Voice command input
   - Responsive design with container queries
 
 ## AI Prefrontal
 
-Cortex includes an autonomous decision engine that monitors sensor readings and automatically controls devices using a hybrid rules + LLM approach.
-
-### Decision Flow
-
-```mermaid
-flowchart TB
-    Start([Telemetry Received]) --> Context[Build Context<br/>trends + baselines + forecasts<br/>cached 30s]
-    Context --> Rules{Rules Match?<br/>threshold + trend<br/>+ forecast + baseline deviation<br/>+ time-of-day + cross-device scope}
-    Rules -->|Yes| Execute[Execute Command<br/>+ OutcomeTracker pre-snapshot]
-    Rules -->|No| Escalate{LLM<br/>Escalation<br/>Trigger?}
-    Escalate -->|Yes| LLM[Ollama Analysis<br/>enriched with trends<br/>+ forecasts + baselines<br/>+ past effectiveness]
-    Escalate -->|No| Post[Post-processing]
-    LLM --> Decision{Command<br/>Generated?}
-    Decision -->|Yes| Execute
-    Decision -->|No| Post
-    Execute --> Publish[Publish to MQTT]
-    Publish --> Post
-    Post --> Outcomes[Check Pending Outcomes<br/>score at 1m/5m/10m intervals]
-    Outcomes --> Baseline[Update Baselines]
-    Baseline --> End([Done])
-```
+Cortex uses Model Predictive Control (MPC) to autonomously monitor sensor readings and compute optimal actuator control.
 
 ### How It Works
 
-1. **Context Building** - Each telemetry message triggers a context build (cached 30s): `DataReader` merges Redis+SQLite readings, `analysis.py` computes trend direction and rate-of-change, `forecaster.py` projects future values via linear regression and EWMA, `CortexMemory` provides hourly baselines for deviation detection
-2. **Rules Engine** - Threshold-based rules with duration/cooldown support, extended with trend conditions (`rising`/`falling`/`stable`), time-of-day windows, forecast conditions (`will_exceed`/`will_drop_below`), and baseline deviation triggers
-3. **LLM Escalation** - Complex patterns escalate to Ollama with enriched context (trend analysis, forecasts, baseline sigma deviations, past command effectiveness)
-4. **Outcome Tracking** - After a command fires, `OutcomeTracker` snapshots sensor state, checks at 1m/5m/10m intervals, and scores effectiveness (-1.0 to +1.0). Results persist to SQLite and feed back into LLM prompts
-5. **Baseline Learning** - Per-device, per-sensor, per-hour baselines accumulate incrementally via Welford's online algorithm, enabling "unusual for this time of day" detection
-6. **Adaptive Learning** - Every 6 hours, the `RuleAdvisor` analyzes outcome effectiveness, baselines, and human observations, then uses the LLM to suggest rule threshold/timing adjustments. High-confidence threshold changes (≥0.8) auto-apply and persist to SQLite; others await approval via the `/api/cortex/adjustments` API. An **effectiveness guard** protects rules that are already working well (avg effectiveness >0.5, ≥3 outcomes) from being over-corrected, and a **±25% cap** prevents drastic single-pass threshold changes
-7. **Multi-Device Coordination** - Rules can use `scope: any` to trigger when any device exceeds a threshold, `scope: all` to require all devices, or `scope: <device_id>` to read from a specific device. `target_scope: all` sends commands to every device with the target actuator
-8. **Direct MQTT** - AI subscribes to telemetry and publishes commands directly
-9. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
-
-### Configuration
-
-Rules are stored in SQLite (`cortex_rules` table) as the single source of truth. On first startup, rules are seeded from `apps/cortex/config/rules.yaml` into the database. After seeding, all rule management happens through the CRUD API and Nerve Center UI — the YAML file is only read again for LLM configuration.
-
-Example seed rules in `apps/cortex/config/rules.yaml`:
-
-```yaml
-rules:
-  - name: "high_temp_fan_on"
-    description: "Turn on fan when temperature is high"
-    condition:
-      sensor: "temp1"
-      operator: ">"
-      threshold: 28
-      duration_seconds: 30
-    action:
-      target: "relay1"
-      action: "set"
-      value: true
-      reason: "Temperature exceeded 28°C for 30s"
-
-  - name: "high_temp_fan_off"
-    description: "Turn off fan when temperature normalizes"
-    condition:
-      sensor: "temp1"
-      operator: "<"
-      threshold: 25
-      duration_seconds: 60
-    action:
-      target: "relay1"
-      action: "set"
-      value: false
-      reason: "Temperature dropped below 25°C"
-
-  # Trend-aware rules (Phase 1)
-  - name: "rising_temp_preemptive"
-    description: "Preemptive cooling when temperature is rising during daytime"
-    condition:
-      sensor: "temp1"
-      operator: ">"
-      threshold: 22
-      trend: "rising"
-      trend_window_minutes: 15
-      time_of_day: { after: "08:00", before: "22:00" }
-      duration_seconds: 30
-    action:
-      target: "relay1"
-      action: "set"
-      value: true
-      reason: "Temperature rising during daytime — preemptive cooling"
-
-  # Cross-device coordination (Phase 5)
-  - name: "any_device_overheat"
-    description: "If ANY device temp exceeds threshold, turn on ALL fans"
-    condition:
-      sensor: "temp1"
-      operator: ">"
-      threshold: 30
-      scope: "any"           # Read from any online device
-      duration_seconds: 30
-    action:
-      target: "relay1"
-      action: "set"
-      value: true
-      target_scope: "all"    # Send to all devices with relay1
-      reason: "Cross-device overheat — activating all fans"
-
-llm:
-  enabled: true
-  escalation_triggers:
-    - rapid_change: 5  # degrees per minute
-```
-
-**Rule Condition Fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `sensor` | string | Sensor ID to monitor (e.g., `temp1`, `hum1`) |
-| `operator` | string | Comparison: `>`, `<`, `>=`, `<=`, `==` |
-| `threshold` | number | Value to compare against |
-| `duration_seconds` | int | Condition must hold for this long before firing |
-| `trend` | string | (Optional) Required trend direction: `rising`, `falling`, `stable` |
-| `trend_window_minutes` | int | (Optional) Window for trend analysis (default: 30) |
-| `time_of_day` | object | (Optional) `{after: "HH:MM", before: "HH:MM"}` — supports overnight ranges |
-| `forecast` | string | (Optional) `will_exceed` or `will_drop_below` — predictive condition (Phase 3) |
-| `forecast_threshold` | number | (Optional) Value the forecast is checked against |
-| `forecast_within_minutes` | number | (Optional) Time horizon for prediction (default: 15) |
-| `baseline_deviation` | number | (Optional) Trigger when abs(deviation) >= N standard deviations from baseline |
-| `scope` | string | (Optional) `self` (default), `any`, `all`, or `<device_id>` — cross-device condition source (Phase 5) |
-
-**Rule Action Fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `target` | string | Actuator ID to control (e.g., `relay1`) |
-| `action` | string | Action type: `set` |
-| `value` | any | Value to set |
-| `reason` | string | Human-readable reason for the action |
-| `target_scope` | string | (Optional) `self` (default), `all`, or `<device_id>` — command destination (Phase 5) |
+1. **MPC Control** - The `MPCPlanner` uses `scipy.optimize.minimize` (SLSQP) with direct nonlinear shooting over a rolling horizon. The physics engine (`PhysicsEngine` or `FastPhysicsEngine`) serves as the prediction model, and the optimizer finds actuator intensities that minimize goal deviation + energy + rate-of-change
+2. **Grow Profiles & Goals** - Per-location grow profiles define strategy (precision/balanced/efficiency) and growth phase; metric goals set target ranges with tolerance and priority weights
+3. **Ecosystem Health** - `EcosystemHealthScorer` computes weighted compliance across all goals with strategy-adjusted tolerances; derived metrics (VPD, dry-back rate, DLI) are computed from raw sensor data
+4. **Direct MQTT** - MPC subscribes to telemetry and publishes commands directly
+5. **Voice Interface** - STT (Vosk) → LLM → TTS (Kokoro) pipeline
 
 ### Command Flow
 
@@ -730,16 +596,14 @@ sequenceDiagram
     participant D as ESP32 Device
     participant WS as Dashboard
 
-    C->>C: Rule triggered or LLM decision
-    C->>C: OutcomeTracker: pre-snapshot sensors
+    C->>C: MPC planner computes optimal control
     C->>M: Publish command<br/>home/{loc}/{id}/command
     M->>D: Forward command
     D->>D: Execute (toggle relay)
     D->>M: Publish ack<br/>home/{loc}/{id}/ack
     M->>C: Ack received
-    C->>C: Update SQLite + OutcomeTracker.handle_ack()
+    C->>C: Update SQLite
     C->>WS: Broadcast relay update
-    Note over C: OutcomeTracker checks at 1m/5m/10m<br/>scores effectiveness → SQLite
 ```
 
 ### Voice Commands
@@ -788,29 +652,36 @@ cd apps/cortex
 pytest tests/ -m "not e2e" -v
 ```
 
-Covers: `analysis.py` (stats, trends, rate-of-change), `cortex_memory.py` (baselines, Welford's algorithm), `data_reader.py` (Redis+SQLite merge, deduplication), `decision_engine.py` (thresholds, trend conditions, time-of-day, forecast conditions, baseline deviation, cooldowns, YAML loading, SQLite loading, LLM escalation), `forecaster.py` (linear forecast, EWMA, breach detection, baseline deviation), `observations.py` (endpoint validation, storage, broadcast), `outcome_tracker.py` (metric inference, scoring, lifecycle, effectiveness summaries), `rule_advisor.py` (LLM analysis, auto-apply, approve/reject, confidence gating, observation correlation), `cortex_api.py` (status, baselines, adjustments, rules CRUD endpoints), `rules_crud.py` (SQLite CRUD, seed from YAML, cascade delete, engine loading), `suggestion_cleanup.py` (rejected suggestion purge, cleanup job), `coordinator.py` (cross-device state queries, actuator lookups), `cross_device_rules.py` (scope any/all/self/device_id, target_scope all/self/device_id, shared state tracking, YAML loading), `sensor_values.py` (EAV table CRUD, bucketed queries, migration from legacy schema), `sensor_meta.py` (sensor type resolution, unit/label helpers), `simulation_grow_tent.py` (physics engine, actuator effects, cross-variable correlations, chart output), `simulation_adaptive.py` (outcome tracking, baseline learning, adaptive loop, suboptimal rule improvement), `simulation_multi_day.py` (ambient schedule, multi-day runner, adaptive convergence, multi-day chart generation).
+Covers: `cortex_api.py` (status, profiles, goals endpoints), `derived_metrics.py` (VPD calculation, dry-back rate, DLI integration), `ecosystem_health.py` (health scoring, strategy tolerance, goal compliance), `grow_profiles.py` (profile/goal CRUD, phase validation), `data_reader.py` (Redis+SQLite merge, deduplication), `observations.py` (endpoint validation, storage, broadcast), `sensor_values.py` (EAV table CRUD, bucketed queries, migration), `sensor_meta.py` (sensor type resolution, unit/label helpers), `chat_session.py` (session store, TTL expiration), `state_planner.py` (MPCConfig, GoalSpec, cost functions, solver convergence, warm start), `simulation_mpc.py` (MPC runner, diagnostics, energy tracking, compliance, chart generation), `simulation_multi_day.py` (ambient schedule, multi-day runner, convergence), `fast_physics.py` (SVP lookup, psychrometrics, direction tests, benchmarks), `fast_physics_mpc.py` (MPC with FastPhysicsEngine), `duct_physics.py` (system resistance, fan operating point, ACH), `substrate_physics.py` (presets, geometry, evap modifier, stress), `room_config.py` (YAML loading, validation, ventilation/substrate parsing).
 
 #### Grow Tent Simulation (offline, no external services)
 ```bash
 cd apps/cortex
 
-# Standard simulation — 3-hour grow tent with physics engine + real DecisionEngine
-python -m simulations.grow_tent
+# MPC simulation (default) — 3h, 15min horizon, SLSQP
+python -m simulations.simulate
 
-# Adaptive learning — Phase 1 (original rules) → gap analysis → Phase 2 (adjusted rules)
-python -m simulations.grow_tent --adaptive
+# MPC with variable-speed actuators (EC fans, dimmable LEDs)
+python -m simulations.simulate --variable -v
 
-# Best demo — suboptimal rules get corrected by the Rule Advisor
-python -m simulations.grow_tent --adaptive --suboptimal
+# Custom room configuration
+python -m simulations.simulate --room simulations/rooms/commercial_10x10.yaml -v
 
-# Multi-day simulation — 72h continuous run with 12h Rule Advisor checkpoints
-python -m simulations.grow_tent --multi-day --suboptimal -v
+# Custom horizon and energy weight
+python -m simulations.simulate --horizon 30 --w-energy 0.1 -v
+
+# Fast physics — lightweight engine for faster MPC solves
+python -m simulations.simulate --fast-physics -v
+
+# Multi-day simulation — 96h with periodic MPC checkpoints
+python -m simulations.simulate --multi-day -v
+python -m simulations.simulate --multi-day --fast-physics -v
 
 # Custom parameters
-python -m simulations.grow_tent --duration 360 --start-hour 6 --ambient-temp 32 --no-noise -v
+python -m simulations.simulate --duration 360 --start-hour 6 -v
 ```
 
-Output charts saved to `apps/cortex/simulations/output/`. The simulation models a sealed grow tent with correlated physics (temperature, humidity, soil moisture, light), actuator effects (fan, exhaust, humidifier, dehumidifier, irrigation, grow light), and cross-variable interactions (heat accelerates soil drying, wet soil raises humidity). The adaptive mode runs two phases and uses the real `RuleAdvisor._deterministic_gap_analysis()` to detect unreachable thresholds and suggest corrections. The multi-day mode runs a continuous 72-hour simulation with a sinusoidal day/night ambient temperature cycle (peak 32°C at 2pm, trough 20°C at 2am), periodic Rule Advisor checkpoints every 12 hours, convergence detection, and a 4-panel chart showing temperature/humidity timelines, effectiveness trajectory, and suggestion counts per phase.
+Output charts saved to `apps/cortex/simulations/output/`. The simulation models a sealed grow tent with 6 state variables (temperature, humidity, soil moisture, CO2, leaf temperature, VPD), 7 continuous actuators at 0.0–1.0 intensity (fan, exhaust, humidifier, dehumidifier, irrigation, grow light, CO2 injector), and coupled plant physiology (Ball-Berry stomatal conductance, photosynthesis response surface with light/CO2/temperature/VPD factors, transpiration). The physics engine models air exchange (ACH from base infiltration + exhaust intensity), CO2 mass balance (injection − plant uptake − ventilation + dark respiration), transpiration cooling, and cross-variable interactions (heat accelerates soil drying, wet soil raises humidity, plant transpiration adds moisture and cools leaf surfaces). The MPC planner uses `scipy.optimize.minimize` (SLSQP) with direct nonlinear shooting — state save/restore + `step()` as the prediction model — to find optimal actuator intensities over a 15-minute rolling horizon. Cost = weighted goal deviation + energy + actuator chattering penalty. Light/CO2 schedule enforced as hard bound constraints. Warm start between solves for ~75ms average solve time. Scenario data (profiles, goals, flower goals, MPC config) is defined in `simulations/scenarios/default.py`.
 
 #### E2E Simulation Tests (requires running stack)
 ```bash
@@ -923,6 +794,6 @@ mosquitto_pub -h localhost -p 1883 -t test -m "hello"
 |---------|--------------|----------|
 | Dashboard shows "Disconnected" | WebSocket connection failed | Check Cortex logs, verify port 8000 |
 | No real-time updates | MQTT not connected | Check Mosquitto logs, verify port 1883 |
-| AI commands not executing | Rules not matching | Check `rules.yaml`, verify sensor IDs |
+| AI commands not executing | MPC not running | Check Cortex logs, verify goals are configured |
 | Voice commands not working | STT/TTS models missing | Download Vosk/Kokoro models |
 | "host.docker.internal" errors | Docker networking issue | Use host network mode or local IP |

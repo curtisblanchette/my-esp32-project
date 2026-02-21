@@ -1,8 +1,7 @@
-"""Matplotlib visualization for simulation results.
+"""Matplotlib visualization for MPC simulation results.
 
-Produces a multi-panel timeseries chart showing sensor readings with
-actuator ON-periods as colored shaded regions. Also generates adaptive
-learning comparison charts showing before/after rule improvements.
+Produces multi-panel timeseries charts showing sensor readings with
+actuator intensity heatmaps, cost decomposition, and compliance tracking.
 """
 
 from pathlib import Path
@@ -13,7 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
-from .runner import SimulationResult, AdaptiveResult, MultiDayResult
+from .runner import MultiDayResult, MPCSimulationResult
 
 
 # Actuator display config: (friendly_name, color, alpha)
@@ -24,414 +23,483 @@ ACTUATOR_STYLES: dict[str, tuple[str, str, float]] = {
     "dehumidifier": ("Dehumidifier", "#D9944A", 0.15),
     "irrigation": ("Irrigation", "#4AD94A", 0.15),
     "light": ("Grow Light", "#D9D94A", 0.15),
+    "co2_injector": ("CO\u2082 Injector", "#8B4513", 0.15),
+    "hvac": ("HVAC", "#5B9BD5", 0.15),
 }
 
 
-def _shade_actuator_periods(
+def _goal_range(goals: list[dict], metric: str) -> tuple[float, float] | None:
+    """Extract the outer envelope of target ranges for a metric across all time windows.
+
+    Returns (min_of_rangeMins, max_of_rangeMaxs) or None if no matching goals.
+    """
+    lo_vals = []
+    hi_vals = []
+    for g in goals:
+        if g.get("metric") == metric:
+            if g.get("rangeMin") is not None:
+                lo_vals.append(g["rangeMin"])
+            if g.get("rangeMax") is not None:
+                hi_vals.append(g["rangeMax"])
+    if lo_vals and hi_vals:
+        return (min(lo_vals), max(hi_vals))
+    return None
+
+
+def _add_target_band(
     ax: plt.Axes,
-    timestamps: list[float],
-    states: list[bool],
+    lo: float,
+    hi: float,
     color: str,
-    alpha: float,
+    *,
+    fill_alpha: float = 0.05,
+    line_alpha: float = 0.3,
+    label: str | None = None,
 ) -> None:
-    """Draw shaded regions where an actuator is ON."""
-    if not timestamps or not states:
-        return
-
-    in_span = False
-    span_start = 0.0
-
-    for i, on in enumerate(states):
-        if on and not in_span:
-            span_start = timestamps[i]
-            in_span = True
-        elif not on and in_span:
-            ax.axvspan(span_start, timestamps[i], color=color, alpha=alpha)
-            in_span = False
-
-    # Close final span if still ON
-    if in_span:
-        ax.axvspan(span_start, timestamps[-1], color=color, alpha=alpha)
+    """Add target range shading with boundary lines to an axis."""
+    ax.axhspan(lo, hi, color=color, alpha=fill_alpha, label=label)
+    ax.axhline(y=lo, color=color, linestyle=":", alpha=line_alpha, linewidth=0.8)
+    ax.axhline(y=hi, color=color, linestyle=":", alpha=line_alpha, linewidth=0.8)
 
 
-def plot_simulation(
-    result: SimulationResult,
-    output_path: str | Path = "simulations/output/grow_tent_simulation.png",
-    title: str | None = None,
-) -> Path:
-    """Generate a 4-panel timeseries chart and save as PNG.
-
-    Panels:
-      1. Temperature (°C) — fan, exhaust, light overlays
-      2. Humidity (%) — humidifier, dehumidifier, exhaust overlays
-      3. Soil Moisture (%, 4 lines) — irrigation overlay
-      4. Light Intensity (lux) — light overlay
-
-    Returns the output path.
-    """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    fig, axes = plt.subplots(4, 1, figsize=(16, 14), sharex=True)
-    ts = result.timestamps
-
-    if title is None:
-        title = (
-            f"Grow Tent Simulation — {result.duration_minutes}min, "
-            f"{result.num_rules} rules, {len(result.events)} commands fired"
+def _add_checkpoints_and_phases(
+    ax: plt.Axes,
+    checkpoint_hours: list[float],
+    phases: list,
+    phase_colors: list,
+) -> None:
+    """Add checkpoint markers and phase shading to an axis."""
+    for ch in checkpoint_hours:
+        ax.axvline(x=ch, color="#7F8C8D", linestyle="--", alpha=0.6, linewidth=0.8)
+    for i, phase in enumerate(phases):
+        ax.axvspan(
+            phase.start_minutes / 60.0, phase.end_minutes / 60.0,
+            color=phase_colors[i], alpha=0.08,
         )
-    fig.suptitle(title, fontsize=14, fontweight="bold", y=0.98)
 
-    # ── Panel 1: Temperature ──────────────────────────────────────────
-    ax_temp = axes[0]
-    ax_temp.plot(ts, result.readings["temp1"], color="#E74C3C", linewidth=1.2, label="temp1")
-    ax_temp.set_ylabel("Temperature (°C)")
-    ax_temp.grid(True, alpha=0.3)
 
-    # Overlays: fan, exhaust, light
-    for act_key in ("fan", "exhaust_fan", "light"):
-        if act_key in result.actuators:
-            label, color, alpha = ACTUATOR_STYLES[act_key]
-            _shade_actuator_periods(ax_temp, ts, result.actuators[act_key], color, alpha)
-
-    # Legend
-    temp_handles = [
-        plt.Line2D([0], [0], color="#E74C3C", linewidth=1.2, label="Temperature"),
+def _build_phase_legend(
+    sensor_label: str,
+    sensor_color: str,
+    phases: list,
+    phase_colors: list,
+    extra_handles: list | None = None,
+) -> list:
+    """Build a legend with sensor line, checkpoint markers, and phase bands."""
+    handles = [
+        plt.Line2D([0], [0], color=sensor_color, linewidth=0.8, label=sensor_label),
+        plt.Line2D([0], [0], color="#7F8C8D", linestyle="--", alpha=0.6, label="Checkpoint"),
     ]
-    for act_key in ("fan", "exhaust_fan", "light"):
-        label, color, _ = ACTUATOR_STYLES[act_key]
-        temp_handles.append(mpatches.Patch(color=color, alpha=0.3, label=f"{label} ON"))
-    ax_temp.legend(handles=temp_handles, loc="upper right", fontsize=8)
-
-    # ── Panel 2: Humidity ─────────────────────────────────────────────
-    ax_hum = axes[1]
-    ax_hum.plot(ts, result.readings["hum1"], color="#3498DB", linewidth=1.2, label="hum1")
-    ax_hum.set_ylabel("Humidity (%)")
-    ax_hum.grid(True, alpha=0.3)
-
-    for act_key in ("humidifier", "dehumidifier", "exhaust_fan"):
-        if act_key in result.actuators:
-            label, color, alpha = ACTUATOR_STYLES[act_key]
-            _shade_actuator_periods(ax_hum, ts, result.actuators[act_key], color, alpha)
-
-    hum_handles = [
-        plt.Line2D([0], [0], color="#3498DB", linewidth=1.2, label="Humidity"),
-    ]
-    for act_key in ("humidifier", "dehumidifier", "exhaust_fan"):
-        label, color, _ = ACTUATOR_STYLES[act_key]
-        hum_handles.append(mpatches.Patch(color=color, alpha=0.3, label=f"{label} ON"))
-    ax_hum.legend(handles=hum_handles, loc="upper right", fontsize=8)
-
-    # ── Panel 3: Soil Moisture ────────────────────────────────────────
-    ax_soil = axes[2]
-    soil_colors = ["#27AE60", "#2ECC71", "#1ABC9C", "#16A085"]
-    for i in range(4):
-        key = f"soil{i + 1}"
-        if key in result.readings:
-            ax_soil.plot(
-                ts, result.readings[key],
-                color=soil_colors[i], linewidth=1.0,
-                label=key, alpha=0.8,
-            )
-    ax_soil.set_ylabel("Soil Moisture (%)")
-    ax_soil.grid(True, alpha=0.3)
-
-    if "irrigation" in result.actuators:
-        label, color, alpha = ACTUATOR_STYLES["irrigation"]
-        _shade_actuator_periods(ax_soil, ts, result.actuators["irrigation"], color, alpha)
-
-    soil_handles = [
-        plt.Line2D([0], [0], color=soil_colors[i], linewidth=1.0, label=f"soil{i+1}")
-        for i in range(4)
-    ]
-    label, color, _ = ACTUATOR_STYLES["irrigation"]
-    soil_handles.append(mpatches.Patch(color=color, alpha=0.3, label=f"{label} ON"))
-    ax_soil.legend(handles=soil_handles, loc="upper right", fontsize=8)
-
-    # ── Panel 4: Light Intensity ──────────────────────────────────────
-    ax_light = axes[3]
-    ax_light.plot(ts, result.readings["light1"], color="#F39C12", linewidth=1.2, label="light1")
-    ax_light.set_ylabel("Light (lux)")
-    ax_light.set_xlabel("Elapsed Time (minutes)")
-    ax_light.grid(True, alpha=0.3)
-
-    if "light" in result.actuators:
-        label, color, alpha = ACTUATOR_STYLES["light"]
-        _shade_actuator_periods(ax_light, ts, result.actuators["light"], color, alpha)
-
-    light_handles = [
-        plt.Line2D([0], [0], color="#F39C12", linewidth=1.2, label="Light Intensity"),
-    ]
-    label, color, _ = ACTUATOR_STYLES["light"]
-    light_handles.append(mpatches.Patch(color=color, alpha=0.3, label=f"{label} ON"))
-    ax_light.legend(handles=light_handles, loc="upper right", fontsize=8)
-
-    # ── Layout ────────────────────────────────────────────────────────
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-    return output_path
-
-
-def plot_adaptive(
-    adaptive: AdaptiveResult,
-    output_path: str | Path = "simulations/output/adaptive_learning.png",
-) -> Path:
-    """Generate a multi-panel comparison chart for adaptive learning.
-
-    Panels:
-      1. Temperature comparison (Phase 1 vs Phase 2)
-      2. Humidity comparison (Phase 1 vs Phase 2)
-      3. Per-command effectiveness scatter (Phase 1 vs Phase 2)
-      4. Summary bar chart (avg effectiveness, event counts, suggestions)
-
-    Returns the output path.
-    """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    fig, axes = plt.subplots(2, 2, figsize=(18, 12))
-    fig.suptitle(
-        f"Adaptive Learning — Rule Advisor Improvement\n"
-        f"Phase 1 avg: {adaptive.phase1_avg_effectiveness:+.3f} → "
-        f"Phase 2 avg: {adaptive.phase2_avg_effectiveness:+.3f} "
-        f"({adaptive.improvement:+.3f} improvement)",
-        fontsize=14, fontweight="bold", y=0.98,
-    )
-
-    p1 = adaptive.phase1
-    p2 = adaptive.phase2
-
-    # ── Panel 1: Temperature Comparison ────────────────────────────────
-    ax_temp = axes[0, 0]
-    if "temp1" in p1.readings and "temp1" in p2.readings:
-        ax_temp.plot(p1.timestamps, p1.readings["temp1"],
-                     color="#E74C3C", linewidth=1.0, alpha=0.6, label="Phase 1")
-        ax_temp.plot(p2.timestamps, p2.readings["temp1"],
-                     color="#2ECC71", linewidth=1.2, label="Phase 2 (adjusted)")
-    ax_temp.set_ylabel("Temperature (°C)")
-    ax_temp.set_xlabel("Elapsed Time (minutes)")
-    ax_temp.set_title("Temperature: Before vs After")
-    ax_temp.legend(fontsize=9)
-    ax_temp.grid(True, alpha=0.3)
-
-    # ── Panel 2: Humidity Comparison ───────────────────────────────────
-    ax_hum = axes[0, 1]
-    if "hum1" in p1.readings and "hum1" in p2.readings:
-        ax_hum.plot(p1.timestamps, p1.readings["hum1"],
-                    color="#3498DB", linewidth=1.0, alpha=0.6, label="Phase 1")
-        ax_hum.plot(p2.timestamps, p2.readings["hum1"],
-                    color="#9B59B6", linewidth=1.2, label="Phase 2 (adjusted)")
-    ax_hum.set_ylabel("Humidity (%)")
-    ax_hum.set_xlabel("Elapsed Time (minutes)")
-    ax_hum.set_title("Humidity: Before vs After")
-    ax_hum.legend(fontsize=9)
-    ax_hum.grid(True, alpha=0.3)
-
-    # ── Panel 3: Effectiveness Scatter ─────────────────────────────────
-    ax_eff = axes[1, 0]
-
-    if p1.outcomes:
-        p1_times = [o.time_minutes for o in p1.outcomes]
-        p1_scores = [o.effectiveness for o in p1.outcomes]
-        ax_eff.scatter(p1_times, p1_scores, color="#E74C3C", alpha=0.6,
-                       s=40, label=f"Phase 1 (avg: {adaptive.phase1_avg_effectiveness:+.2f})",
-                       zorder=3)
-
-    if p2.outcomes:
-        p2_times = [o.time_minutes for o in p2.outcomes]
-        p2_scores = [o.effectiveness for o in p2.outcomes]
-        ax_eff.scatter(p2_times, p2_scores, color="#2ECC71", alpha=0.6,
-                       s=40, label=f"Phase 2 (avg: {adaptive.phase2_avg_effectiveness:+.2f})",
-                       marker="D", zorder=3)
-
-    ax_eff.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
-    ax_eff.set_ylabel("Effectiveness Score")
-    ax_eff.set_xlabel("Elapsed Time (minutes)")
-    ax_eff.set_title("Command Effectiveness Over Time")
-    ax_eff.set_ylim(-1.1, 1.1)
-    ax_eff.legend(fontsize=9)
-    ax_eff.grid(True, alpha=0.3)
-
-    # ── Panel 4: Summary Bar Chart ─────────────────────────────────────
-    ax_bar = axes[1, 1]
-
-    categories = ["Avg\nEffectiveness", "Commands\nFired", "Positive\nOutcomes"]
-    p1_positive = sum(1 for o in p1.outcomes if o.effectiveness > 0.1) if p1.outcomes else 0
-    p2_positive = sum(1 for o in p2.outcomes if o.effectiveness > 0.1) if p2.outcomes else 0
-
-    p1_vals = [adaptive.phase1_avg_effectiveness, len(p1.events), p1_positive]
-    p2_vals = [adaptive.phase2_avg_effectiveness, len(p2.events), p2_positive]
-
-    x = np.arange(len(categories))
-    width = 0.35
-
-    bars1 = ax_bar.bar(x - width / 2, p1_vals, width, label="Phase 1",
-                       color="#E74C3C", alpha=0.7)
-    bars2 = ax_bar.bar(x + width / 2, p2_vals, width, label="Phase 2",
-                       color="#2ECC71", alpha=0.7)
-
-    ax_bar.set_xticks(x)
-    ax_bar.set_xticklabels(categories)
-    ax_bar.set_title(f"Summary ({len(adaptive.suggestions)} suggestions applied)")
-    ax_bar.legend(fontsize=9)
-    ax_bar.grid(True, alpha=0.3, axis="y")
-
-    # Add value labels on bars
-    for bar in bars1:
-        h = bar.get_height()
-        ax_bar.annotate(f"{h:.2f}" if abs(h) < 10 else f"{int(h)}",
-                        xy=(bar.get_x() + bar.get_width() / 2, h),
-                        xytext=(0, 3), textcoords="offset points",
-                        ha="center", va="bottom", fontsize=8)
-    for bar in bars2:
-        h = bar.get_height()
-        ax_bar.annotate(f"{h:.2f}" if abs(h) < 10 else f"{int(h)}",
-                        xy=(bar.get_x() + bar.get_width() / 2, h),
-                        xytext=(0, 3), textcoords="offset points",
-                        ha="center", va="bottom", fontsize=8)
-
-    # ── Layout ────────────────────────────────────────────────────────
-    plt.tight_layout(rect=[0, 0, 1, 0.93])
-    fig.savefig(output_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-    return output_path
+    if extra_handles:
+        handles.extend(extra_handles)
+    for i, phase in enumerate(phases):
+        handles.append(
+            mpatches.Patch(color=phase_colors[i], alpha=0.25, label=f"Phase {phase.phase_num}")
+        )
+    return handles
 
 
 def plot_multi_day(
     result: MultiDayResult,
-    output_path: str | Path = "simulations/output/multi_day_adaptive.png",
+    output_path: str | Path = "simulations/output/multi_day_mpc.png",
+    goals: list[dict] | None = None,
+    actuator_specs: dict | None = None,
+    space: "SpaceConfig | None" = None,
+    room_name: str | None = None,
 ) -> Path:
-    """Generate a multi-panel chart for multi-day adaptive simulation.
+    """Generate a multi-panel chart for multi-day MPC simulation.
 
-    Panels:
-      1. Full temperature timeline with checkpoint markers
-      2. Full humidity timeline with checkpoint markers
-      3. Effectiveness trajectory (bar per phase)
-      4. Cumulative suggestions and improvement
+    Panels (dynamic — CO2/VPD added when data present):
+      Row 0: Temperature timeline | Humidity timeline
+      Row 1: CO₂ timeline (opt)  | VPD timeline (opt)
+      Row N: Actuator intensity heatmap (full width)
+      Last:  Compliance bars      | Equipment config
 
     Returns the output path.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    fig, axes = plt.subplots(2, 2, figsize=(20, 12))
+    has_co2 = "co2_1" in result.readings and len(result.readings["co2_1"]) > 0
+    has_vpd = "vpd1" in result.readings and len(result.readings["vpd1"]) > 0
+    has_extra_row = has_co2 or has_vpd
+    # sensor rows + heatmap row + bottom row
+    n_rows = (2 if has_extra_row else 1) + 1 + 1
+
+    fig = plt.figure(figsize=(20, 5 * n_rows))
+    gs = fig.add_gridspec(n_rows, 2, hspace=0.35, wspace=0.2)
 
     duration_h = result.total_duration_minutes / 60
-    fig.suptitle(
-        f"Multi-Day Adaptive Learning — {duration_h:.0f}h, "
+    title_parts = [f"Multi-Day MPC — {duration_h:.0f}h"]
+    if room_name:
+        title_parts[0] = f"{room_name} MPC — {duration_h:.0f}h"
+    title_parts.append(
         f"{result.num_checkpoints} phases, "
-        f"overall improvement: {result.overall_improvement:+.3f}",
+        f"energy={result.total_energy_wh:.0f}Wh"
+    )
+    fig.suptitle(
+        ", ".join(title_parts),
         fontsize=14, fontweight="bold", y=0.98,
     )
 
     ts = result.timestamps
-    # Convert to hours for readability
     ts_hours = [t / 60.0 for t in ts]
 
-    # Checkpoint boundaries in hours
     checkpoint_hours = [p.end_minutes / 60.0 for p in result.phases[:-1]]
 
-    # Phase colors (gradient from red to green)
+    # Phase colors — RdYlGn gradient across all phases
     n_phases = len(result.phases)
-    phase_colors = plt.cm.RdYlGn(np.linspace(0.15, 0.85, max(n_phases, 2)))
+    phase_colors = list(plt.cm.RdYlGn(np.linspace(0.15, 0.85, max(n_phases, 2))))
 
-    # ── Panel 1: Temperature Timeline ──────────────────────────────────
-    ax_temp = axes[0, 0]
+    row = 0
+
+    # ── Row 0, Col 0: Temperature Timeline ─────────────────────────────
+    ax_temp = fig.add_subplot(gs[row, 0])
     if "temp1" in result.readings:
         ax_temp.plot(ts_hours, result.readings["temp1"],
                      color="#E74C3C", linewidth=0.8, alpha=0.8)
-    for ch in checkpoint_hours:
-        ax_temp.axvline(x=ch, color="#7F8C8D", linestyle="--", alpha=0.6, linewidth=0.8)
-    # Shade phases
-    for i, phase in enumerate(result.phases):
-        ax_temp.axvspan(
-            phase.start_minutes / 60.0, phase.end_minutes / 60.0,
-            color=phase_colors[i], alpha=0.08,
-        )
+    temp_range = _goal_range(goals, "temp1") if goals else None
+    if temp_range:
+        _add_target_band(ax_temp, temp_range[0], temp_range[1], "#E74C3C")
+    _add_checkpoints_and_phases(ax_temp, checkpoint_hours, result.phases, phase_colors)
     ax_temp.set_ylabel("Temperature (°C)")
     ax_temp.set_xlabel("Time (hours)")
     ax_temp.set_title("Temperature with Checkpoint Markers")
     ax_temp.grid(True, alpha=0.3)
+    temp_extra = [mpatches.Patch(color="#E74C3C", alpha=0.1, label=f"Target ({temp_range[0]:.0f}–{temp_range[1]:.0f}°C)")] if temp_range else None
+    ax_temp.legend(
+        handles=_build_phase_legend("Temperature", "#E74C3C", result.phases, phase_colors, temp_extra),
+        loc="upper right", fontsize=7, ncol=2,
+    )
 
-    # ── Panel 2: Humidity Timeline ─────────────────────────────────────
-    ax_hum = axes[0, 1]
+    # ── Row 0, Col 1: Humidity Timeline ────────────────────────────────
+    ax_hum = fig.add_subplot(gs[row, 1])
     if "hum1" in result.readings:
         ax_hum.plot(ts_hours, result.readings["hum1"],
                     color="#3498DB", linewidth=0.8, alpha=0.8)
-    for ch in checkpoint_hours:
-        ax_hum.axvline(x=ch, color="#7F8C8D", linestyle="--", alpha=0.6, linewidth=0.8)
-    for i, phase in enumerate(result.phases):
-        ax_hum.axvspan(
-            phase.start_minutes / 60.0, phase.end_minutes / 60.0,
-            color=phase_colors[i], alpha=0.08,
-        )
+    hum_range = _goal_range(goals, "hum1") if goals else None
+    if hum_range:
+        _add_target_band(ax_hum, hum_range[0], hum_range[1], "#3498DB")
+    _add_checkpoints_and_phases(ax_hum, checkpoint_hours, result.phases, phase_colors)
     ax_hum.set_ylabel("Humidity (%)")
     ax_hum.set_xlabel("Time (hours)")
     ax_hum.set_title("Humidity with Checkpoint Markers")
     ax_hum.grid(True, alpha=0.3)
+    hum_extra = [mpatches.Patch(color="#3498DB", alpha=0.1, label=f"Target ({hum_range[0]:.0f}–{hum_range[1]:.0f}%)")] if hum_range else None
+    ax_hum.legend(
+        handles=_build_phase_legend("Humidity", "#3498DB", result.phases, phase_colors, hum_extra),
+        loc="upper right", fontsize=7, ncol=2,
+    )
 
-    # ── Panel 3: Effectiveness Trajectory ──────────────────────────────
-    ax_eff = axes[1, 0]
+    row += 1
+
+    # ── Row 1 (optional): CO₂ and VPD Timelines ───────────────────────
+    if has_extra_row:
+        # CO₂ panel
+        ax_co2 = fig.add_subplot(gs[row, 0])
+        if has_co2:
+            ax_co2.plot(ts_hours, result.readings["co2_1"],
+                        color="#8B4513", linewidth=0.8, alpha=0.8)
+            _add_target_band(ax_co2, 800, 1200, "#8B4513")
+        _add_checkpoints_and_phases(ax_co2, checkpoint_hours, result.phases, phase_colors)
+        ax_co2.set_ylabel("CO\u2082 (ppm)")
+        ax_co2.set_xlabel("Time (hours)")
+        ax_co2.set_title("CO\u2082 with Checkpoint Markers")
+        ax_co2.grid(True, alpha=0.3)
+        co2_extra = [mpatches.Patch(color="#8B4513", alpha=0.1, label="Target (800\u20131200)")]
+        ax_co2.legend(
+            handles=_build_phase_legend("CO\u2082", "#8B4513", result.phases, phase_colors, co2_extra),
+            loc="upper right", fontsize=7, ncol=2,
+        )
+
+        # VPD panel
+        ax_vpd = fig.add_subplot(gs[row, 1])
+        if has_vpd:
+            ax_vpd.plot(ts_hours, result.readings["vpd1"],
+                        color="#6C3483", linewidth=0.8, alpha=0.8)
+            _add_target_band(ax_vpd, 0.8, 1.4, "#6C3483")
+        _add_checkpoints_and_phases(ax_vpd, checkpoint_hours, result.phases, phase_colors)
+        ax_vpd.set_ylabel("VPD (kPa)")
+        ax_vpd.set_xlabel("Time (hours)")
+        ax_vpd.set_title("VPD with Checkpoint Markers")
+        ax_vpd.grid(True, alpha=0.3)
+        vpd_extra = [mpatches.Patch(color="#6C3483", alpha=0.1, label="Target (0.8\u20131.4 kPa)")]
+        ax_vpd.legend(
+            handles=_build_phase_legend("VPD", "#6C3483", result.phases, phase_colors, vpd_extra),
+            loc="upper right", fontsize=7, ncol=2,
+        )
+
+        row += 1
+
+    # ── Actuator Intensity Heatmap (full width) ────────────────────────
+    ax_heat = fig.add_subplot(gs[row, :])
+    # Use result's actual actuator set (dynamic — includes hvac when present)
+    heat_names = list(result.intensities.keys()) if result.intensities else list(_MPC_ACTUATOR_COLORS.keys())
+    heatmap_data = []
+    labels = []
+    for name in heat_names:
+        vals = result.intensities.get(name, [0.0] * len(ts))
+        heatmap_data.append(vals)
+        style_name = ACTUATOR_STYLES.get(name, (name, "#888", 0.15))[0]
+        labels.append(style_name)
+
+    heatmap_arr = np.array(heatmap_data)
+    im = ax_heat.imshow(
+        heatmap_arr,
+        aspect="auto",
+        cmap="YlOrRd",
+        vmin=0.0,
+        vmax=1.0,
+        extent=[ts_hours[0], ts_hours[-1], -0.5, len(heat_names) - 0.5],
+        origin="lower",
+        interpolation="nearest",
+    )
+    # Add checkpoint lines to heatmap
+    for ch in checkpoint_hours:
+        ax_heat.axvline(x=ch, color="#7F8C8D", linestyle="--", alpha=0.6, linewidth=0.8)
+    ax_heat.set_yticks(range(len(labels)))
+    ax_heat.set_yticklabels(labels, fontsize=9)
+    ax_heat.set_title("Actuator Intensities (0.0 – 1.0)", fontsize=10)
+    ax_heat.set_xlabel("Time (hours)")
+    fig.colorbar(im, ax=ax_heat, shrink=0.6, label="Intensity")
+
+    row += 1
+
+    # ── Last Row: Compliance Bars | Equipment Config ───────────────────
+    ax_comp = fig.add_subplot(gs[row, 0])
     phase_labels = [f"Phase {p.phase_num}" for p in result.phases]
-    eff_values = result.effectiveness_trajectory
-    bar_colors = [phase_colors[i] for i in range(len(eff_values))]
+    comp_values = [p.avg_compliance * 100 for p in result.phases]
+    bar_colors_comp = [phase_colors[i] for i in range(len(comp_values))]
 
-    bars = ax_eff.bar(range(len(eff_values)), eff_values, color=bar_colors, edgecolor="white")
-    ax_eff.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
+    bars = ax_comp.bar(range(len(comp_values)), comp_values, color=bar_colors_comp, edgecolor="white")
 
-    # Value labels
     for i, bar in enumerate(bars):
         h = bar.get_height()
-        ax_eff.annotate(
-            f"{h:+.3f}",
+        ax_comp.annotate(
+            f"{h:.1f}%",
             xy=(bar.get_x() + bar.get_width() / 2, h),
-            xytext=(0, 3 if h >= 0 else -12),
+            xytext=(0, 3),
             textcoords="offset points",
-            ha="center", va="bottom" if h >= 0 else "top",
+            ha="center", va="bottom",
             fontsize=9, fontweight="bold",
         )
 
-    ax_eff.set_xticks(range(len(phase_labels)))
-    ax_eff.set_xticklabels(phase_labels, fontsize=9)
-    ax_eff.set_ylabel("Avg Effectiveness")
-    ax_eff.set_title("Effectiveness Trajectory Across Phases")
-    ax_eff.set_ylim(min(min(eff_values) - 0.15, -0.3), max(max(eff_values) + 0.15, 0.3))
-    ax_eff.grid(True, alpha=0.3, axis="y")
+    ax_comp.set_xticks(range(len(phase_labels)))
+    ax_comp.set_xticklabels(phase_labels, fontsize=9)
+    ax_comp.set_ylabel("Avg Compliance (%)")
+    ax_comp.set_title("Compliance Trajectory Across Phases")
+    ax_comp.set_ylim(0, 105)
+    ax_comp.grid(True, alpha=0.3, axis="y")
 
-    # ── Panel 4: Suggestions & Improvement Summary ─────────────────────
-    ax_summary = axes[1, 1]
+    # ── Last Row: Equipment Configuration ────────────────────────────
+    ax_equip = fig.add_subplot(gs[row, 1])
+    ax_equip.axis("off")
 
-    # Stacked bar: suggestions generated vs applied per phase
-    x = np.arange(n_phases)
-    generated = [p.num_suggestions_generated for p in result.phases]
-    applied = [p.num_suggestions_applied for p in result.phases]
-
-    ax_summary.bar(x, generated, width=0.5, color="#3498DB", alpha=0.7, label="Generated")
-    ax_summary.bar(x, applied, width=0.5, color="#2ECC71", alpha=0.9, label="Applied")
-
-    # Overlay effectiveness line
-    ax2 = ax_summary.twinx()
-    ax2.plot(x, eff_values, color="#E74C3C", marker="o", linewidth=2, label="Effectiveness")
-    ax2.set_ylabel("Avg Effectiveness", color="#E74C3C")
-    ax2.tick_params(axis="y", labelcolor="#E74C3C")
-    ax2.axhline(y=0, color="#E74C3C", linestyle=":", alpha=0.3)
-
-    ax_summary.set_xticks(x)
-    ax_summary.set_xticklabels(phase_labels, fontsize=9)
-    ax_summary.set_ylabel("Suggestion Count")
-    ax_summary.set_title(
-        f"Suggestions Over Time — "
-        f"{result.total_suggestions} total, {result.total_applied} applied"
-    )
-    ax_summary.legend(loc="upper left", fontsize=9)
-    ax2.legend(loc="upper right", fontsize=9)
-    ax_summary.grid(True, alpha=0.3, axis="y")
+    if actuator_specs:
+        lines = []
+        if room_name:
+            lines.append(f"Room: {room_name}")
+        if space:
+            lines.append(f"Volume: {space.volume_m3:.0f} m\u00b3  |  Floor: {space.floor_area_m2:.0f} m\u00b2  |  Pots: {space.num_pots}")
+        lines.append("")
+        lines.append(f"{'Actuator':<18} {'Watts':>6}  {'Control':<9} {'Extra'}")
+        lines.append("\u2500" * 55)
+        for relay_id in sorted(actuator_specs):
+            spec = actuator_specs[relay_id]
+            extra = ""
+            if spec.humidify_g_per_min:
+                extra = f"+{spec.humidify_g_per_min:.0f} g/min"
+            elif spec.dehumidify_g_per_min:
+                extra = f"-{spec.dehumidify_g_per_min:.0f} g/min"
+            lines.append(
+                f"{spec.name:<18} {spec.max_watts:>6.0f}W  {spec.control_type:<9} {extra}"
+            )
+        # Add energy breakdown
+        if result.energy_breakdown:
+            lines.append("")
+            lines.append(f"{'Energy Breakdown':<18} {'Wh':>8}")
+            lines.append("\u2500" * 30)
+            for name, wh in sorted(result.energy_breakdown.items(), key=lambda x: -x[1]):
+                if wh > 0:
+                    lines.append(f"{name:<18} {wh:>8.1f}")
+            lines.append(f"{'Total':<18} {result.total_energy_wh:>8.1f}")
+        ax_equip.text(
+            0.05, 0.95, "\n".join(lines),
+            transform=ax_equip.transAxes,
+            fontsize=10, fontfamily="monospace",
+            verticalalignment="top",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="#F8F9FA", edgecolor="#DEE2E6", alpha=0.9),
+        )
+        ax_equip.set_title("Equipment Configuration", fontsize=11, fontweight="bold")
 
     # ── Layout ─────────────────────────────────────────────────────────
     plt.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return output_path
+
+
+# ── MPC Charts ──────────────────────────────────────────────────────
+
+# Actuator colors for the intensity heatmap
+_MPC_ACTUATOR_COLORS: dict[str, str] = {
+    "fan": "#4A90D9",
+    "exhaust_fan": "#D94A4A",
+    "humidifier": "#4AD9D9",
+    "dehumidifier": "#D9944A",
+    "irrigation": "#4AD94A",
+    "light": "#D9D94A",
+    "co2_injector": "#8B4513",
+    "hvac": "#5B9BD5",
+}
+
+
+def plot_mpc_simulation(
+    result: MPCSimulationResult,
+    output_path: str | Path = "simulations/output/mpc_simulation.png",
+    title: str | None = None,
+    goals: list[dict] | None = None,
+) -> Path:
+    """Generate an MPC simulation chart with sensor panels, intensity heatmap, and diagnostics.
+
+    Panels:
+      Row 0: Temperature + Humidity (side by side)
+      Row 1: CO2 + VPD (if data present)
+      Row 2: Actuator intensity heatmap (7 actuators)
+      Row 3: MPC cost breakdown + solve time
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    has_co2 = "co2_1" in result.readings and len(result.readings.get("co2_1", [])) > 0
+    has_vpd = "vpd1" in result.readings and len(result.readings.get("vpd1", [])) > 0
+
+    n_rows = 3  # sensors, heatmap, diagnostics
+    if has_co2 or has_vpd:
+        n_rows = 4  # + CO2/VPD row
+
+    fig = plt.figure(figsize=(16, 3.5 * n_rows + 1.5))
+    gs = fig.add_gridspec(n_rows, 2, hspace=0.35, wspace=0.25)
+
+    ts = result.timestamps
+    ts_h = [t / 60.0 for t in ts]
+
+    if title is None:
+        title = (
+            f"MPC State Planner — {result.duration_minutes}min, "
+            f"avg health={result.avg_health:.1%}, "
+            f"energy={result.total_energy_wh:.0f}Wh"
+        )
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=0.98)
+
+    row = 0
+
+    # ── Panel: Temperature ──────────────────────────────────────────
+    ax_temp = fig.add_subplot(gs[row, 0])
+    ax_temp.plot(ts_h, result.readings["temp1"], color="#E74C3C", linewidth=1.2)
+    temp_range = _goal_range(goals, "temp1") if goals else None
+    if temp_range:
+        _add_target_band(ax_temp, temp_range[0], temp_range[1], "#E74C3C", fill_alpha=0.08, label=f"Target {temp_range[0]:.0f}–{temp_range[1]:.0f}°C")
+    ax_temp.set_ylabel("Temperature (°C)")
+    ax_temp.set_title("Temperature", fontsize=10)
+    ax_temp.grid(True, alpha=0.3)
+    if temp_range:
+        ax_temp.legend(fontsize=8)
+
+    # ── Panel: Humidity ─────────────────────────────────────────────
+    ax_hum = fig.add_subplot(gs[row, 1])
+    ax_hum.plot(ts_h, result.readings["hum1"], color="#3498DB", linewidth=1.2)
+    hum_range = _goal_range(goals, "hum1") if goals else None
+    if hum_range:
+        _add_target_band(ax_hum, hum_range[0], hum_range[1], "#3498DB", fill_alpha=0.08, label=f"Target {hum_range[0]:.0f}–{hum_range[1]:.0f}%")
+    ax_hum.set_ylabel("Humidity (%)")
+    ax_hum.set_title("Humidity", fontsize=10)
+    ax_hum.grid(True, alpha=0.3)
+    if hum_range:
+        ax_hum.legend(fontsize=8)
+
+    row += 1
+
+    # ── Panel: CO2 + VPD ────────────────────────────────────────────
+    if has_co2 or has_vpd:
+        if has_co2:
+            ax_co2 = fig.add_subplot(gs[row, 0])
+            ax_co2.plot(ts_h, result.readings["co2_1"], color="#8B4513", linewidth=1.2)
+            _add_target_band(ax_co2, 800, 1200, "#8B4513", fill_alpha=0.08, label="Target 800–1200")
+            ax_co2.set_ylabel("CO₂ (ppm)")
+            ax_co2.set_title("CO₂", fontsize=10)
+            ax_co2.grid(True, alpha=0.3)
+            ax_co2.legend(fontsize=8)
+
+        if has_vpd:
+            ax_vpd = fig.add_subplot(gs[row, 1])
+            ax_vpd.plot(ts_h, result.readings["vpd1"], color="#6C3483", linewidth=1.2)
+            _add_target_band(ax_vpd, 0.8, 1.4, "#6C3483", fill_alpha=0.08, label="Target 0.8–1.4")
+            ax_vpd.set_ylabel("VPD (kPa)")
+            ax_vpd.set_title("VPD", fontsize=10)
+            ax_vpd.grid(True, alpha=0.3)
+            ax_vpd.legend(fontsize=8)
+
+        row += 1
+
+    # ── Panel: Actuator Intensity Heatmap ───────────────────────────
+    ax_heat = fig.add_subplot(gs[row, :])
+    # Use result's actual actuator set (dynamic — includes hvac when present)
+    heat_names = list(result.intensities.keys()) if result.intensities else list(_MPC_ACTUATOR_COLORS.keys())
+    # Build heatmap matrix: rows = actuators (bottom to top), cols = time
+    heatmap_data = []
+    labels = []
+    for name in heat_names:
+        vals = result.intensities.get(name, [0.0] * len(ts))
+        heatmap_data.append(vals)
+        style_name = ACTUATOR_STYLES.get(name, (name, "#888", 0.15))[0]
+        labels.append(style_name)
+
+    heatmap_arr = np.array(heatmap_data)
+    im = ax_heat.imshow(
+        heatmap_arr,
+        aspect="auto",
+        cmap="YlOrRd",
+        vmin=0.0,
+        vmax=1.0,
+        extent=[ts_h[0], ts_h[-1], -0.5, len(heat_names) - 0.5],
+        origin="lower",
+        interpolation="nearest",
+    )
+    ax_heat.set_yticks(range(len(labels)))
+    ax_heat.set_yticklabels(labels, fontsize=9)
+    ax_heat.set_title("Actuator Intensities (0.0 – 1.0)", fontsize=10)
+    ax_heat.set_xlabel("Time (hours)")
+    fig.colorbar(im, ax=ax_heat, shrink=0.6, label="Intensity")
+
+    row += 1
+
+    # ── Panel: MPC Diagnostics ──────────────────────────────────────
+    ax_cost = fig.add_subplot(gs[row, 0])
+    ax_cost.fill_between(ts_h, 0, result.goal_costs, color="#E74C3C", alpha=0.4, label="Goal")
+    goal_top = result.goal_costs
+    energy_top = [g + e for g, e in zip(result.goal_costs, result.energy_costs)]
+    ax_cost.fill_between(ts_h, goal_top, energy_top, color="#F39C12", alpha=0.4, label="Energy")
+    rate_top = [et + r for et, r in zip(energy_top, result.rate_costs)]
+    ax_cost.fill_between(ts_h, energy_top, rate_top, color="#3498DB", alpha=0.4, label="Rate")
+    ax_cost.set_ylabel("Cost")
+    ax_cost.set_title("Cost Decomposition", fontsize=10)
+    ax_cost.set_xlabel("Time (hours)")
+    ax_cost.legend(fontsize=8)
+    ax_cost.grid(True, alpha=0.3)
+
+    ax_solve = fig.add_subplot(gs[row, 1])
+    ax_solve.plot(ts_h, result.solve_times_ms, color="#2ECC71", linewidth=0.8, alpha=0.7)
+    avg_ms = sum(result.solve_times_ms) / max(len(result.solve_times_ms), 1)
+    ax_solve.axhline(y=avg_ms, color="#27AE60", linestyle="--", linewidth=1, label=f"Avg: {avg_ms:.1f}ms")
+    ax_solve.set_ylabel("Solve Time (ms)")
+    ax_solve.set_title("MPC Solve Time", fontsize=10)
+    ax_solve.set_xlabel("Time (hours)")
+    ax_solve.legend(fontsize=8)
+    ax_solve.grid(True, alpha=0.3)
+
+    # ── Save ────────────────────────────────────────────────────────
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 

@@ -92,12 +92,6 @@ class WebSocketServer:
         except Exception as e:
             logger.error(f"Error fetching commands for WebSocket: {e}")
 
-        # Send rule suggestions
-        try:
-            suggestions = sqlite.get_suggestions(limit=20)
-            await self._send(ws, {"type": "suggestions", "data": suggestions})
-        except Exception as e:
-            logger.error(f"Error fetching suggestions for WebSocket: {e}")
 
     def set_latest(self, reading: dict[str, Any]) -> None:
         """Update in-memory latest reading for a device."""
@@ -141,14 +135,6 @@ class WebSocketServer:
     async def broadcast_event(self, event: dict[str, Any]) -> None:
         """Broadcast an event."""
         await self._broadcast({"type": "event", "data": event})
-
-    async def broadcast_suggestions(self, suggestions: list[dict[str, Any]]) -> None:
-        """Broadcast rule adjustment suggestions."""
-        await self._broadcast({"type": "suggestions", "data": suggestions})
-
-    async def broadcast_rules(self, rules: list[dict[str, Any]]) -> None:
-        """Broadcast current rule states."""
-        await self._broadcast({"type": "rules", "data": rules})
 
     # ── Internal ─────────────────────────────────────────────────────
 

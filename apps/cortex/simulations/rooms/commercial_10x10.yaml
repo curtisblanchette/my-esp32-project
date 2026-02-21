@@ -1,0 +1,61 @@
+# Commercial Grow Room — 10m x 10m (small commercial facility)
+# Higher wattage equipment, more pots, variable-speed exhaust and lights.
+
+name: "10x10 Commercial Room"
+
+space:
+  floor_area_m2: 100.0      # 10m x 10m
+  volume_m3: 300.0           # 10 x 10 x 3m ceiling
+  ach_base: 0.3              # sealed room, lower passive infiltration
+  ach_max: 12.0              # industrial inline fans
+  num_pots: 50
+  max_ppfd: 1500.0           # commercial LED fixtures
+  co2_ambient: 420.0
+  h_ambient: 50.0
+
+actuators:
+  relay1: { name: fan,           max_watts: 200,  control_type: binary   }
+  relay2: { name: exhaust_fan,   max_watts: 500,  control_type: variable }
+  relay3: { name: humidifier,    max_watts: 150,  control_type: binary,   humidify_g_per_min: 25.0  }
+  relay4: { name: dehumidifier,  max_watts: 1200, control_type: variable, dehumidify_g_per_min: 50.0 }
+  relay5: { name: irrigation,    max_watts: 50,   control_type: binary   }
+  relay6: { name: light,         max_watts: 4000, control_type: variable }
+  relay7: { name: co2_injector,  max_watts: 25,   control_type: binary   }
+  relay8: { name: hvac,          max_watts: 3500, control_type: variable }
+
+ambient:
+  schedule: sinusoidal
+  mean_temp: 28.0            # warmer climate
+  amplitude: 5.0
+  peak_hour: 14.0
+  temp: 30.0
+
+plant:
+  phase: flower
+  lai: 4.5
+  pmax: 30.0
+
+substrate:
+  medium: coco_perlite_70_30
+  container:
+    type: pot
+    diameter_cm: 25
+    height_cm: 25
+
+ventilation:
+  exhaust:
+    rated_cfm: 800             # 800 CFM inline fan (e.g. AC Infinity CLOUDLINE T8)
+    max_static_pressure: 1.8   # inches water column at stall
+  duct:
+    diameter_in: 10            # 10" rigid galvanised
+    length_ft: 20              # 20 ft duct run
+    material: smooth           # rigid duct
+    elbows_90: 2               # two 90° bends
+    has_carbon_filter: true    # odour control
+  passive_ach: 0.3             # sealed room
+
+initial_conditions:
+  temperature: 24.0
+  humidity: 55.0
+  co2: 420.0
+  soil_moisture: 42.0        # VWC near field capacity for coco/perlite

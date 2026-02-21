@@ -1,0 +1,47 @@
+# 4x4 Grow Tent — 1.2m x 1.2m (standard hobby tent)
+# Reproduces the built-in default configuration exactly.
+
+name: "4x4 Grow Tent"
+
+space:
+  floor_area_m2: 1.44       # 1.2m x 1.2m
+  volume_m3: 2.88           # 1.2 x 1.2 x 2.0m height
+  ach_base: 0.5             # passive air changes/hour (infiltration, leaks)
+  ach_max: 20.0             # max ACH at full exhaust fan
+  num_pots: 4
+  max_ppfd: 1000.0          # max light output (umol/m2/s)
+  co2_ambient: 420.0        # outdoor CO2 (ppm)
+  h_ambient: 50.0           # outdoor humidity (%)
+
+actuators:
+  relay1: { name: fan,           max_watts: 45,  control_type: binary }
+  relay2: { name: exhaust_fan,   max_watts: 85,  control_type: binary }
+  relay3: { name: humidifier,    max_watts: 30,  control_type: binary }
+  relay4: { name: dehumidifier,  max_watts: 300, control_type: binary }
+  relay5: { name: irrigation,    max_watts: 15,  control_type: binary }
+  relay6: { name: light,         max_watts: 480, control_type: binary }
+  relay7: { name: co2_injector,  max_watts: 10,  control_type: binary }
+
+ambient:
+  schedule: sinusoidal
+  mean_temp: 26.0            # mean outdoor temperature (C)
+  amplitude: 6.0             # day/night swing (C)
+  peak_hour: 14.0            # hour of peak outdoor temperature
+  temp: 30.0                 # fallback for fixed schedule
+
+plant:
+  phase: veg
+
+substrate:
+  medium: living_soil
+  container:
+    type: bed
+    length_cm: 120
+    width_cm: 60
+    depth_cm: 30
+
+initial_conditions:
+  temperature: 24.0
+  humidity: 55.0
+  co2: 420.0
+  soil_moisture: [38.0, 36.0, 40.0, 35.0]

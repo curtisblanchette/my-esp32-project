@@ -177,6 +177,7 @@ class SqliteClient:
         self._db = sqlite3.connect(db_path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA busy_timeout = 5000")
+        self._db.execute("PRAGMA foreign_keys = ON")
 
         self._db.executescript(f"""
             PRAGMA journal_mode = {self._journal_mode};
@@ -238,20 +239,6 @@ class SqliteClient:
             CREATE INDEX IF NOT EXISTS idx_devices_location ON devices(location);
             CREATE INDEX IF NOT EXISTS idx_devices_online ON devices(online);
 
-            CREATE TABLE IF NOT EXISTS cortex_rules (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                description TEXT NOT NULL,
-                condition JSON NOT NULL,
-                action JSON NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                source TEXT NOT NULL DEFAULT 'yaml',
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_rules_name ON cortex_rules(name);
-            CREATE INDEX IF NOT EXISTS idx_rules_enabled ON cortex_rules(enabled);
-
             CREATE TABLE IF NOT EXISTS location_goals (
                 location TEXT PRIMARY KEY,
                 goal TEXT NOT NULL,
@@ -270,6 +257,60 @@ class SqliteClient:
             CREATE INDEX IF NOT EXISTS idx_sv_ts ON sensor_values(ts);
             CREATE INDEX IF NOT EXISTS idx_sv_device_sensor ON sensor_values(device_id, sensor_id, ts);
             CREATE INDEX IF NOT EXISTS idx_sv_device_ts ON sensor_values(device_id, ts);
+
+            CREATE TABLE IF NOT EXISTS cortex_profiles (
+                id TEXT PRIMARY KEY,
+                location TEXT NOT NULL,
+                name TEXT NOT NULL,
+                strategy TEXT NOT NULL DEFAULT 'balanced',
+                phase TEXT,
+                phase_start TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(location)
+            );
+            CREATE INDEX IF NOT EXISTS idx_profiles_location ON cortex_profiles(location);
+
+            CREATE TABLE IF NOT EXISTS cortex_goals (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL REFERENCES cortex_profiles(id) ON DELETE CASCADE,
+                metric TEXT NOT NULL,
+                metric_type TEXT NOT NULL DEFAULT 'sensor',
+                phase TEXT,
+                range_min REAL,
+                range_max REAL,
+                tolerance REAL DEFAULT 0.0,
+                priority REAL DEFAULT 1.0,
+                schedule TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_goals_profile ON cortex_goals(profile_id);
+
+            CREATE TABLE IF NOT EXISTS cortex_health (
+                location TEXT NOT NULL,
+                ts INTEGER NOT NULL,
+                score REAL NOT NULL,
+                detail TEXT NOT NULL,
+                PRIMARY KEY (location, ts)
+            );
+            CREATE INDEX IF NOT EXISTS idx_health_location_ts ON cortex_health(location, ts);
+
+            CREATE TABLE IF NOT EXISTS cortex_effects (
+                device_id TEXT NOT NULL,
+                actuator TEXT NOT NULL,
+                action TEXT NOT NULL,
+                sensor TEXT NOT NULL,
+                avg_delta_5m REAL NOT NULL,
+                std_dev REAL NOT NULL,
+                sample_count INTEGER NOT NULL,
+                sum_values REAL NOT NULL,
+                sum_squares REAL NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (device_id, actuator, action, sensor)
+            );
+
         """)
 
         self._run_migrations()
@@ -324,6 +365,14 @@ class SqliteClient:
                 "FROM sensor_readings"
             )
             logger.info("Migration: sensor_values populated")
+
+        # Add time_window columns to cortex_goals for day/night goal scheduling
+        cursor = db.execute("PRAGMA table_info(cortex_goals)")
+        goal_columns = {row["name"] for row in cursor.fetchall()}
+        if "time_window_on_hour" not in goal_columns:
+            logger.info("Migration: Adding time_window columns to cortex_goals table")
+            db.execute("ALTER TABLE cortex_goals ADD COLUMN time_window_on_hour REAL")
+            db.execute("ALTER TABLE cortex_goals ADD COLUMN time_window_off_hour REAL")
 
         db.commit()
 
@@ -867,156 +916,41 @@ class SqliteClient:
 
         return actuators
 
-    # ── Suggestions (Rule Advisor) ──────────────────────────────────
+    # ── Grow Profiles ──────────────────────────────────────────────
 
-    def insert_suggestion(
+    VALID_STRATEGIES = {"precision", "balanced", "efficiency"}
+    VALID_PHASES = {"seedling", "veg", "flower", "late_flower", "dry", "cure"}
+
+    def insert_profile(
         self,
-        id: str,
-        rule_name: str,
-        field: str,
-        current_value: str,
-        suggested_value: str,
-        reason: str,
-        confidence: float,
-        outcome_sample_count: int = 0,
-        observation_context: str | None = None,
-    ) -> dict:
-        db = self._get_db()
-        now = int(time.time() * 1000)
-        db.execute(
-            "INSERT INTO cortex_suggestions "
-            "(id, created_at, rule_name, field, current_value, suggested_value, "
-            "reason, confidence, status, outcome_sample_count, observation_context) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-            (id, now, rule_name, field, current_value, suggested_value,
-             reason, confidence, outcome_sample_count, observation_context),
-        )
-        db.commit()
-        return self._suggestion_to_dict(db.execute(
-            "SELECT * FROM cortex_suggestions WHERE id = ?", (id,)
-        ).fetchone())
-
-    def get_suggestions(
-        self,
-        status: str | None = None,
-        limit: int = 20,
-    ) -> list[dict]:
-        db = self._get_db()
-        if status:
-            cursor = db.execute(
-                "SELECT * FROM cortex_suggestions WHERE status = ? "
-                "ORDER BY created_at DESC LIMIT ?",
-                (status, limit),
-            )
-        else:
-            cursor = db.execute(
-                "SELECT * FROM cortex_suggestions ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            )
-        return [self._suggestion_to_dict(row) for row in cursor.fetchall()]
-
-    def update_suggestion_status(self, id: str, status: str) -> bool:
-        db = self._get_db()
-        now = int(time.time() * 1000)
-        cursor = db.execute(
-            "UPDATE cortex_suggestions SET status = ?, resolved_at = ? WHERE id = ?",
-            (status, now, id),
-        )
-        db.commit()
-        return cursor.rowcount > 0
-
-    def get_suggestion(self, id: str) -> dict | None:
-        db = self._get_db()
-        row = db.execute(
-            "SELECT * FROM cortex_suggestions WHERE id = ?", (id,)
-        ).fetchone()
-        if not row:
-            return None
-        return self._suggestion_to_dict(row)
-
-    def _suggestion_to_dict(self, row: sqlite3.Row) -> dict:
-        return {
-            "id": row["id"],
-            "createdAt": row["created_at"],
-            "ruleName": row["rule_name"],
-            "field": row["field"],
-            "currentValue": row["current_value"],
-            "suggestedValue": row["suggested_value"],
-            "reason": row["reason"],
-            "confidence": row["confidence"],
-            "status": row["status"],
-            "resolvedAt": row["resolved_at"],
-            "outcomeSampleCount": row["outcome_sample_count"],
-            "observationContext": row["observation_context"],
-        }
-
-    def has_duplicate_suggestion(
-        self, rule_name: str, field: str, suggested_value: str,
-    ) -> bool:
-        """Check if an applied or pending suggestion already exists for this rule+field+value."""
-        db = self._get_db()
-        row = db.execute(
-            "SELECT 1 FROM cortex_suggestions "
-            "WHERE rule_name = ? AND field = ? AND suggested_value = ? "
-            "AND status IN ('applied', 'pending') LIMIT 1",
-            (rule_name, field, suggested_value),
-        ).fetchone()
-        return row is not None
-
-    def purge_rejected_suggestions(self, older_than_ms: int) -> int:
-        """Delete rejected suggestions resolved before the given timestamp (ms)."""
-        db = self._get_db()
-        cursor = db.execute(
-            "DELETE FROM cortex_suggestions WHERE status = 'rejected' AND resolved_at < ?",
-            (older_than_ms,),
-        )
-        db.commit()
-        return cursor.rowcount
-
-    def count_suggestions_by_status(self) -> dict[str, int]:
-        db = self._get_db()
-        cursor = db.execute(
-            "SELECT status, COUNT(*) as cnt FROM cortex_suggestions GROUP BY status"
-        )
-        counts: dict[str, int] = {}
-        for row in cursor.fetchall():
-            counts[row["status"]] = row["cnt"]
-        return counts
-
-    # ── Rules (CRUD) ──────────────────────────────────────────────────
-
-    def insert_rule(
-        self,
+        location: str,
         name: str,
-        description: str,
-        condition: dict,
-        action: dict,
-        enabled: bool = True,
-        source: str = "user",
+        strategy: str = "balanced",
+        phase: str | None = None,
+        phase_start: str | None = None,
     ) -> dict:
-        """Insert a new rule. Generates a UUID id. Returns the rule dict."""
+        """Create a new grow profile for a location."""
         db = self._get_db()
-        rule_id = str(uuid.uuid4())
+        profile_id = str(uuid.uuid4())
         now = int(time.time() * 1000)
         db.execute(
-            "INSERT INTO cortex_rules (id, name, description, condition, action, enabled, source, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (rule_id, name, description, json.dumps(condition), json.dumps(action),
-             1 if enabled else 0, source, now, now),
+            "INSERT INTO cortex_profiles (id, location, name, strategy, phase, phase_start, active, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (profile_id, location, name, strategy, phase, phase_start, now, now),
         )
         db.commit()
-        return self.get_rule(rule_id)
+        return self.get_profile(profile_id)
 
-    def update_rule(
+    def update_profile(
         self,
-        rule_id: str,
+        profile_id: str,
         name: str | None = None,
-        description: str | None = None,
-        condition: dict | None = None,
-        action: dict | None = None,
-        enabled: bool | None = None,
+        strategy: str | None = None,
+        phase: str | None = None,
+        phase_start: str | None = None,
+        active: bool | None = None,
     ) -> dict | None:
-        """Update a rule by id. Only non-None fields are updated. Returns updated rule or None."""
+        """Update a profile. Only non-None fields are updated."""
         db = self._get_db()
         sets: list[str] = []
         params: list[Any] = []
@@ -1024,157 +958,363 @@ class SqliteClient:
         if name is not None:
             sets.append("name = ?")
             params.append(name)
-        if description is not None:
-            sets.append("description = ?")
-            params.append(description)
-        if condition is not None:
-            sets.append("condition = ?")
-            params.append(json.dumps(condition))
-        if action is not None:
-            sets.append("action = ?")
-            params.append(json.dumps(action))
-        if enabled is not None:
-            sets.append("enabled = ?")
-            params.append(1 if enabled else 0)
+        if strategy is not None:
+            sets.append("strategy = ?")
+            params.append(strategy)
+        if phase is not None:
+            sets.append("phase = ?")
+            params.append(phase)
+        if phase_start is not None:
+            sets.append("phase_start = ?")
+            params.append(phase_start)
+        if active is not None:
+            sets.append("active = ?")
+            params.append(1 if active else 0)
 
         if not sets:
-            return self.get_rule(rule_id)
+            return self.get_profile(profile_id)
 
         sets.append("updated_at = ?")
         params.append(int(time.time() * 1000))
-        params.append(rule_id)
+        params.append(profile_id)
 
         cursor = db.execute(
-            f"UPDATE cortex_rules SET {', '.join(sets)} WHERE id = ?",
-            params,
+            f"UPDATE cortex_profiles SET {', '.join(sets)} WHERE id = ?", params
         )
         db.commit()
         if cursor.rowcount == 0:
             return None
-        return self.get_rule(rule_id)
+        return self.get_profile(profile_id)
 
-    def delete_rule(self, rule_id: str) -> bool:
-        """Delete a rule by id. Cascade deletes associated suggestions by rule name."""
+    def get_profile(self, profile_id: str) -> dict | None:
         db = self._get_db()
-        # Get the rule name first for cascade
-        row = db.execute("SELECT name FROM cortex_rules WHERE id = ?", (rule_id,)).fetchone()
-        if not row:
-            return False
-
-        rule_name = row["name"]
-        try:
-            db.execute("DELETE FROM cortex_suggestions WHERE rule_name = ?", (rule_name,))
-        except sqlite3.OperationalError:
-            pass  # cortex_suggestions table may not exist yet
-        db.execute("DELETE FROM cortex_rules WHERE id = ?", (rule_id,))
-        db.commit()
-        return True
-
-    def get_rule(self, rule_id: str) -> dict | None:
-        """Get a rule by id."""
-        db = self._get_db()
-        row = db.execute("SELECT * FROM cortex_rules WHERE id = ?", (rule_id,)).fetchone()
+        row = db.execute("SELECT * FROM cortex_profiles WHERE id = ?", (profile_id,)).fetchone()
         if not row:
             return None
-        return self._rule_row_to_dict(row)
+        return self._profile_row_to_dict(row)
 
-    def get_rule_by_name(self, name: str) -> dict | None:
-        """Get a rule by name."""
+    def get_profile_by_location(self, location: str) -> dict | None:
         db = self._get_db()
-        row = db.execute("SELECT * FROM cortex_rules WHERE name = ?", (name,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM cortex_profiles WHERE location = ? AND active = 1", (location,)
+        ).fetchone()
         if not row:
             return None
-        return self._rule_row_to_dict(row)
+        return self._profile_row_to_dict(row)
 
-    def get_all_rules(self) -> list[dict]:
-        """Get all rules ordered by created_at."""
+    def get_all_profiles(self) -> list[dict]:
         db = self._get_db()
-        cursor = db.execute("SELECT * FROM cortex_rules ORDER BY created_at ASC")
-        return [self._rule_row_to_dict(row) for row in cursor.fetchall()]
+        rows = db.execute("SELECT * FROM cortex_profiles ORDER BY location ASC").fetchall()
+        return [self._profile_row_to_dict(row) for row in rows]
 
-    def update_rule_enabled(self, rule_id: str, enabled: bool) -> bool:
-        """Toggle a rule's enabled state."""
+    def delete_profile(self, profile_id: str) -> bool:
         db = self._get_db()
-        cursor = db.execute(
-            "UPDATE cortex_rules SET enabled = ?, updated_at = ? WHERE id = ?",
-            (1 if enabled else 0, int(time.time() * 1000), rule_id),
-        )
+        cursor = db.execute("DELETE FROM cortex_profiles WHERE id = ?", (profile_id,))
         db.commit()
         return cursor.rowcount > 0
 
-    def update_rule_condition_field(self, rule_id: str, field: str, value: Any) -> bool:
-        """Update a single field within a rule's condition JSON. Used by RuleAdvisor."""
-        db = self._get_db()
-        row = db.execute("SELECT condition FROM cortex_rules WHERE id = ?", (rule_id,)).fetchone()
-        if not row:
-            return False
-        condition = json.loads(row["condition"])
-        condition[field] = value
-        cursor = db.execute(
-            "UPDATE cortex_rules SET condition = ?, updated_at = ? WHERE id = ?",
-            (json.dumps(condition), int(time.time() * 1000), rule_id),
-        )
-        db.commit()
-        return cursor.rowcount > 0
-
-    def count_rules(self) -> int:
-        """Count total rules."""
-        db = self._get_db()
-        return db.execute("SELECT COUNT(*) FROM cortex_rules").fetchone()[0]
-
-    def seed_rules_from_yaml(self, yaml_path: str) -> int:
-        """Import rules from YAML into DB if the rules table is empty.
-        Returns number of rules imported (0 if table already has rules or file missing).
-        """
-        if self.count_rules() > 0:
-            logger.info("Rules table already populated, skipping seed")
-            return 0
-
-        path = Path(yaml_path)
-        if not path.exists():
-            logger.warning(f"YAML seed file not found: {yaml_path}")
-            return 0
-
-        import yaml
-        with open(path) as f:
-            config = yaml.safe_load(f)
-
-        rules_data = config.get("rules", [])
-        if not rules_data:
-            return 0
-
-        count = 0
-        for rule_data in rules_data:
-            condition = rule_data.get("condition", {})
-            action = rule_data.get("action", {})
-            self.insert_rule(
-                name=rule_data.get("name", ""),
-                description=rule_data.get("description", ""),
-                condition=condition,
-                action=action,
-                enabled=rule_data.get("enabled", True),
-                source="yaml",
-            )
-            count += 1
-
-        logger.info(f"Seeded {count} rules from {yaml_path}")
-        return count
-
-    def _rule_row_to_dict(self, row: sqlite3.Row) -> dict:
-        """Convert a cortex_rules row to a camelCase dict."""
-        created_at = row["created_at"]
-        updated_at = row["updated_at"]
+    def _profile_row_to_dict(self, row: sqlite3.Row) -> dict:
         return {
             "id": row["id"],
+            "location": row["location"],
             "name": row["name"],
-            "description": row["description"],
-            "condition": json.loads(row["condition"]),
-            "action": json.loads(row["action"]),
-            "enabled": bool(row["enabled"]),
-            "source": row["source"],
-            "modified": updated_at > created_at,
-            "createdAt": created_at,
-            "updatedAt": updated_at,
+            "strategy": row["strategy"],
+            "phase": row["phase"],
+            "phaseStart": row["phase_start"],
+            "active": bool(row["active"]),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    # ── Goals ────────────────────────────────────────────────────────
+
+    def insert_goal(
+        self,
+        profile_id: str,
+        metric: str,
+        metric_type: str = "sensor",
+        phase: str | None = None,
+        range_min: float | None = None,
+        range_max: float | None = None,
+        tolerance: float = 0.0,
+        priority: float = 1.0,
+        schedule: dict | None = None,
+        time_window_on_hour: float | None = None,
+        time_window_off_hour: float | None = None,
+    ) -> dict:
+        """Create a new goal for a profile."""
+        db = self._get_db()
+        goal_id = str(uuid.uuid4())
+        now = int(time.time() * 1000)
+        db.execute(
+            "INSERT INTO cortex_goals (id, profile_id, metric, metric_type, phase, "
+            "range_min, range_max, tolerance, priority, schedule, "
+            "time_window_on_hour, time_window_off_hour, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (goal_id, profile_id, metric, metric_type, phase,
+             range_min, range_max, tolerance, priority,
+             json.dumps(schedule) if schedule else None,
+             time_window_on_hour, time_window_off_hour, now, now),
+        )
+        db.commit()
+        return self.get_goal(goal_id)
+
+    _UNSET = object()
+
+    def update_goal(
+        self,
+        goal_id: str,
+        metric: str | None = None,
+        metric_type: str | None = None,
+        phase: str | None = None,
+        range_min: float | None = None,
+        range_max: float | None = None,
+        tolerance: float | None = None,
+        priority: float | None = None,
+        schedule: dict | None = None,
+        time_window_on_hour: float | None | object = _UNSET,
+        time_window_off_hour: float | None | object = _UNSET,
+    ) -> dict | None:
+        db = self._get_db()
+        sets: list[str] = []
+        params: list[Any] = []
+
+        if metric is not None:
+            sets.append("metric = ?")
+            params.append(metric)
+        if metric_type is not None:
+            sets.append("metric_type = ?")
+            params.append(metric_type)
+        if phase is not None:
+            sets.append("phase = ?")
+            params.append(phase)
+        if range_min is not None:
+            sets.append("range_min = ?")
+            params.append(range_min)
+        if range_max is not None:
+            sets.append("range_max = ?")
+            params.append(range_max)
+        if tolerance is not None:
+            sets.append("tolerance = ?")
+            params.append(tolerance)
+        if priority is not None:
+            sets.append("priority = ?")
+            params.append(priority)
+        if schedule is not None:
+            sets.append("schedule = ?")
+            params.append(json.dumps(schedule))
+        if time_window_on_hour is not self._UNSET:
+            sets.append("time_window_on_hour = ?")
+            params.append(time_window_on_hour)
+        if time_window_off_hour is not self._UNSET:
+            sets.append("time_window_off_hour = ?")
+            params.append(time_window_off_hour)
+
+        if not sets:
+            return self.get_goal(goal_id)
+
+        sets.append("updated_at = ?")
+        params.append(int(time.time() * 1000))
+        params.append(goal_id)
+
+        cursor = db.execute(
+            f"UPDATE cortex_goals SET {', '.join(sets)} WHERE id = ?", params
+        )
+        db.commit()
+        if cursor.rowcount == 0:
+            return None
+        return self.get_goal(goal_id)
+
+    def get_goal(self, goal_id: str) -> dict | None:
+        db = self._get_db()
+        row = db.execute("SELECT * FROM cortex_goals WHERE id = ?", (goal_id,)).fetchone()
+        if not row:
+            return None
+        return self._goal_row_to_dict(row)
+
+    def get_goals_for_profile(self, profile_id: str, phase: str | None = None) -> list[dict]:
+        """Get goals for a profile, optionally filtered to a specific phase."""
+        db = self._get_db()
+        if phase:
+            # Return goals matching the phase OR goals with no phase (all-phases)
+            cursor = db.execute(
+                "SELECT * FROM cortex_goals WHERE profile_id = ? AND (phase = ? OR phase IS NULL) "
+                "ORDER BY priority DESC",
+                (profile_id, phase),
+            )
+        else:
+            cursor = db.execute(
+                "SELECT * FROM cortex_goals WHERE profile_id = ? ORDER BY priority DESC",
+                (profile_id,),
+            )
+        return [self._goal_row_to_dict(row) for row in cursor.fetchall()]
+
+    def delete_goal(self, goal_id: str) -> bool:
+        db = self._get_db()
+        cursor = db.execute("DELETE FROM cortex_goals WHERE id = ?", (goal_id,))
+        db.commit()
+        return cursor.rowcount > 0
+
+    def delete_goals_for_profile(self, profile_id: str) -> int:
+        db = self._get_db()
+        cursor = db.execute("DELETE FROM cortex_goals WHERE profile_id = ?", (profile_id,))
+        db.commit()
+        return cursor.rowcount
+
+    def _goal_row_to_dict(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "profileId": row["profile_id"],
+            "metric": row["metric"],
+            "metricType": row["metric_type"],
+            "phase": row["phase"],
+            "rangeMin": row["range_min"],
+            "rangeMax": row["range_max"],
+            "tolerance": row["tolerance"],
+            "priority": row["priority"],
+            "schedule": json.loads(row["schedule"]) if row["schedule"] else None,
+            "timeWindow": {
+                "onHour": row["time_window_on_hour"],
+                "offHour": row["time_window_off_hour"],
+            } if row["time_window_on_hour"] is not None else None,
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    # ── Ecosystem Health ─────────────────────────────────────────────
+
+    def insert_health(self, location: str, ts: int, score: float, detail: dict) -> None:
+        """Record an ecosystem health snapshot."""
+        db = self._get_db()
+        db.execute(
+            "INSERT OR REPLACE INTO cortex_health (location, ts, score, detail) VALUES (?, ?, ?, ?)",
+            (location, ts, score, json.dumps(detail)),
+        )
+        db.commit()
+
+    def query_health(
+        self,
+        location: str,
+        since_ms: int,
+        until_ms: int | None = None,
+        limit: int = 500,
+    ) -> list[dict]:
+        """Query health history for a location."""
+        db = self._get_db()
+        until_ms = until_ms or int(time.time() * 1000)
+        cursor = db.execute(
+            "SELECT location, ts, score, detail FROM cortex_health "
+            "WHERE location = ? AND ts >= ? AND ts <= ? ORDER BY ts ASC LIMIT ?",
+            (location, since_ms, until_ms, limit),
+        )
+        return [
+            {
+                "location": row["location"],
+                "ts": row["ts"],
+                "score": row["score"],
+                "detail": json.loads(row["detail"]),
+            }
+            for row in cursor.fetchall()
+        ]
+
+    def get_latest_health(self, location: str) -> dict | None:
+        """Get the most recent health snapshot for a location."""
+        db = self._get_db()
+        row = db.execute(
+            "SELECT location, ts, score, detail FROM cortex_health "
+            "WHERE location = ? ORDER BY ts DESC LIMIT 1",
+            (location,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "location": row["location"],
+            "ts": row["ts"],
+            "score": row["score"],
+            "detail": json.loads(row["detail"]),
+        }
+
+    # ── Effect Profiles ────────────────────────────────────────────
+
+    def upsert_effect(
+        self,
+        device_id: str,
+        actuator: str,
+        action: str,
+        sensor: str,
+        avg_delta_5m: float,
+        std_dev: float,
+        sample_count: int,
+        sum_values: float,
+        sum_squares: float,
+    ) -> None:
+        """Insert or replace an effect profile entry."""
+        db = self._get_db()
+        now = int(time.time() * 1000)
+        db.execute(
+            "INSERT OR REPLACE INTO cortex_effects "
+            "(device_id, actuator, action, sensor, avg_delta_5m, std_dev, "
+            "sample_count, sum_values, sum_squares, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (device_id, actuator, action, sensor, avg_delta_5m, std_dev,
+             sample_count, sum_values, sum_squares, now),
+        )
+        db.commit()
+
+    def get_effect(
+        self,
+        device_id: str,
+        actuator: str,
+        action: str,
+        sensor: str,
+    ) -> dict | None:
+        """Get a single effect entry."""
+        db = self._get_db()
+        row = db.execute(
+            "SELECT * FROM cortex_effects "
+            "WHERE device_id = ? AND actuator = ? AND action = ? AND sensor = ?",
+            (device_id, actuator, action, sensor),
+        ).fetchone()
+        if not row:
+            return None
+        return self._effect_row_to_dict(row)
+
+    def get_effects(
+        self,
+        device_id: str | None = None,
+        actuator: str | None = None,
+        min_samples: int = 0,
+    ) -> list[dict]:
+        """Query effect profiles with optional filters."""
+        db = self._get_db()
+        sql = "SELECT * FROM cortex_effects WHERE 1=1"
+        params: list[Any] = []
+
+        if device_id:
+            sql += " AND device_id = ?"
+            params.append(device_id)
+        if actuator:
+            sql += " AND actuator = ?"
+            params.append(actuator)
+        if min_samples > 0:
+            sql += " AND sample_count >= ?"
+            params.append(min_samples)
+
+        sql += " ORDER BY device_id, actuator, action, sensor"
+        cursor = db.execute(sql, params)
+        return [self._effect_row_to_dict(row) for row in cursor.fetchall()]
+
+    def _effect_row_to_dict(self, row: sqlite3.Row) -> dict:
+        return {
+            "deviceId": row["device_id"],
+            "actuator": row["actuator"],
+            "action": row["action"],
+            "sensor": row["sensor"],
+            "avgDelta5m": row["avg_delta_5m"],
+            "stdDev": row["std_dev"],
+            "sampleCount": row["sample_count"],
+            "confidence": min(1.0, row["sample_count"] / 10),
+            "updatedAt": row["updated_at"],
         }
 
     # ── Location Goals ─────────────────────────────────────────────

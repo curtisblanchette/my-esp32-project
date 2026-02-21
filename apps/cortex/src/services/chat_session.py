@@ -12,9 +12,6 @@ class ChatSession:
     """A single chat conversation session."""
 
     session_id: str
-    location: str | None = None
-    goal: str | None = None
-    proposed_rules: list[dict] | None = None
     messages: list[dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -55,24 +52,6 @@ class ChatSessionStore:
         session = self._sessions[session_id]
         session.updated_at = time.time()
         return list(session.messages)
-
-    def set_proposed_rules(self, session_id: str, rules: list[dict]) -> None:
-        """Store proposed rules pending approval."""
-        session = self.get_or_create(session_id)
-        session.proposed_rules = rules
-        session.updated_at = time.time()
-
-    def get_proposed_rules(self, session_id: str) -> list[dict] | None:
-        """Get pending proposed rules for a session."""
-        if session_id not in self._sessions:
-            return None
-        return self._sessions[session_id].proposed_rules
-
-    def clear_proposed_rules(self, session_id: str) -> None:
-        """Clear pending proposed rules after approval/rejection."""
-        if session_id in self._sessions:
-            self._sessions[session_id].proposed_rules = None
-            self._sessions[session_id].updated_at = time.time()
 
     def _cleanup_expired(self) -> None:
         """Remove sessions that have exceeded the TTL."""
